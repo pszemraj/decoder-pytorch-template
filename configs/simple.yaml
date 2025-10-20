@@ -1,0 +1,36 @@
+# Simple Llama configuration
+run_dir: runs/simple
+
+# Model
+num_tokens: 256
+dim: 512
+depth: 16
+heads: 8
+dim_head: 64
+tied_embedding: true
+ffn_dim_multiplier: 1.5  # 768 hidden dim
+flash_attn: true
+compile: false # speed up training with torch.compile
+
+# Training
+num_batches: 100000
+batch_size: 4
+grad_accum_every: 4
+learning_rate: 0.003
+weight_decay: 0.0003
+grad_clip_norm: 1.0
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 512
+
+# Validation & generation
+validate_every: 100
+val_batches: 50
+generate_every: 500
+save_every: 1000
+temperature: 1.0
+min_p: 0.1
+
+# Random seed
+seed: null

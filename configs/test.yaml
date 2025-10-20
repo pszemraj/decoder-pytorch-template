@@ -1,0 +1,32 @@
+# Quick test configuration
+run_dir: runs/test
+
+# Small model for testing
+num_tokens: 256
+dim: 128
+depth: 2
+heads: 4
+dim_head: 32
+tied_embedding: true
+flash_attn: true
+compile: false
+
+# Quick training
+num_batches: 10
+batch_size: 2
+grad_accum_every: 2
+learning_rate: 0.001
+grad_clip_norm: 1.0
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 128
+
+# Validation
+validate_every: 5
+val_batches: 50
+generate_every: 1000  # Don't generate during test
+save_every: 1000  # Don't save during test
+
+# Random seed for reproducibility
+seed: 42
