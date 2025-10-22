@@ -1,0 +1,38 @@
+# ROSA with lower learning rate
+run_dir: runs/rosa_lowlr
+seed: 42
+
+# Model
+num_tokens: 256
+dim: 128
+depth: 4
+tied_embedding: true
+compile: false
+
+# ROSA-specific
+rosa_state_cap: 8192
+k_candidates: 1
+temperature: 1.0
+channels: 1
+ff_mult: 4
+drop: 0.1
+
+# Training - LOWER LR
+num_batches: 50
+batch_size: 4
+grad_accum_every: 2
+learning_rate: 0.0003  # 10x lower!
+weight_decay: 0.0003
+grad_clip_norm: 1.0
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 256
+
+# Validation & generation
+validate_every: 10
+val_batches: 5
+generate_every: 10
+save_every: 50
+temperature: 0.8
+min_p: 0.05
