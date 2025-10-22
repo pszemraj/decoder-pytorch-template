@@ -1,6 +1,7 @@
 """Llama-style transformer for language modeling experiments."""
 
 from .llama import Llama
+from .rosa import ROSA
 from .utils import (
     configure_tf32,
     gumbel_noise,
@@ -14,6 +15,7 @@ from .utils import (
 
 __all__ = [
     "Llama",
+    "ROSA",
     # Sampling utilities
     "log",
     "gumbel_noise",

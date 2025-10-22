@@ -1,0 +1,38 @@
+# ROSA configuration
+run_dir: runs/rosa
+seed: null
+
+# Model - ROSA specific
+num_tokens: 256 # vocab size (character modeling)
+dim: 512 # hidden size
+depth: 16 # number of ROSA layers
+tied_embedding: true # share in/out embeddings
+compile: false # speed up training
+
+# ROSA-specific parameters
+rosa_state_cap: 65536 # maximum pointer state capacity
+k_candidates: 1 # number of pointer candidates (>1 enables soft mixing)
+temperature: 1.0 # temperature for soft pointer mixing (if k_candidates > 1)
+channels: 1 # number of parallel ROSA channels (>1 enables multi-channel)
+ff_mult: 4 # feedforward dimension multiplier
+drop: 0.1 # dropout probability
+
+# Training
+num_batches: 100000 # total steps
+batch_size: 4
+grad_accum_every: 4 # follows unsloth fix: https://unsloth.ai/blog/gradient
+learning_rate: 0.003
+weight_decay: 0.0003
+grad_clip_norm: 1.0 # gradient clipping
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 512
+
+# Validation & generation
+validate_every: 100
+val_batches: 50
+generate_every: 500
+save_every: 5000
+temperature: 1.0 # sampling temperature
+min_p: 0.1 # min prob threshold

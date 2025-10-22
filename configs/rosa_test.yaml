@@ -1,0 +1,38 @@
+# Quick test ROSA configuration (small model, few batches)
+run_dir: runs/rosa_test
+seed: 42
+
+# Model - Small ROSA for testing
+num_tokens: 256 # vocab size (character modeling)
+dim: 128 # hidden size (small for testing)
+depth: 4 # number of ROSA layers (small for testing)
+tied_embedding: true
+compile: false
+
+# ROSA-specific parameters
+rosa_state_cap: 8192 # smaller for testing
+k_candidates: 1 # hard pointers
+temperature: 1.0
+channels: 1
+ff_mult: 4
+drop: 0.1
+
+# Training - Quick test
+num_batches: 10 # just 10 batches for testing
+batch_size: 2
+grad_accum_every: 2
+learning_rate: 0.003
+weight_decay: 0.0003
+grad_clip_norm: 1.0
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 128 # shorter sequences for testing
+
+# Validation & generation
+validate_every: 5
+val_batches: 2
+generate_every: 5
+save_every: 10
+temperature: 1.0
+min_p: 0.1
