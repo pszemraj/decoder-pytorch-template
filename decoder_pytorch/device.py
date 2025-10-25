@@ -53,8 +53,8 @@ def get_optimal_device(
         DeviceSelection(device, device_type, device_info, amp_dtype)
 
     Notes:
-        - For CUDA & MPS, the suggested autocast dtype is torch.bfloat16.
-        - CPU autocast is limited and typically uses float32.
+        - All devices (CUDA, MPS, CPU) use torch.bfloat16 for autocast.
+        - bfloat16-compatible hardware is assumed (2025 AD standard).
         - If `enable_tf32` is provided, it toggles TF32 on CUDA (Ampere+).
     """
     log = logger or logging.getLogger(__name__)
@@ -103,13 +103,13 @@ def get_optimal_device(
         if dev_type == "cpu":
             info = "CPU"
             device = torch.device("cpu")
-            amp_dtype = torch.float32
+            amp_dtype = torch.bfloat16
             log.info("Using %s (no GPU acceleration available)", info)
             return DeviceSelection(device, "cpu", info, amp_dtype)
 
     # Absolute fallback (shouldn't be reached)
     info = "CPU"
     device = torch.device("cpu")
-    amp_dtype = torch.float32
+    amp_dtype = torch.bfloat16
     log.warning("Falling back to CPU; no preferred devices were available.")
     return DeviceSelection(device, "cpu", info, amp_dtype)
