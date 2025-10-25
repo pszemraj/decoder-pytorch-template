@@ -24,6 +24,13 @@ python train.py --config configs/simple.yaml
 python train.py --config configs/test.yaml
 ```
 
+## Device Selection & Precision
+
+- The training script calls `decoder_pytorch.get_optimal_device()` which prefers `cuda -> mps -> cpu` and prints a human-readable summary of the accelerator in use.
+- Override detection with `FORCE_DEVICE=cuda`, `FORCE_DEVICE=cpu`, or even `FORCE_DEVICE=cuda:1` to pick a specific index (also available as the `force=` argument).
+- The returned `DeviceSelection` exposes `.autocast_context(enabled=...)` so you can opt into bfloat16 autocast wherever it makes sense; configs set `use_autocast: true` by default.
+- CUDA runs enable TF32 when requested (Ampere or newer); invalid device preferences are ignored with a debug log, keeping things easy to reason about.
+
 ## Structure
 
 ```text

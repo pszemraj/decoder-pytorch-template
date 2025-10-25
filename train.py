@@ -3,7 +3,6 @@
 import argparse
 import gzip
 import json
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -72,14 +71,10 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     print(f"Device: {device_sel.device_info}")
 
     # Setup autocast context
-    use_autocast = config.get("use_autocast", True)
+    use_autocast = bool(config.get("use_autocast", True))
     if use_autocast:
-        autocast_ctx = lambda: torch.autocast(
-            device_type=device_sel.device_type, dtype=device_sel.amp_dtype
-        )
         print(f"Mixed precision: enabled ({device_sel.amp_dtype})")
     else:
-        autocast_ctx = lambda: nullcontext()
         print("Mixed precision: disabled (full fp32)")
 
     if config.get("seed"):
@@ -167,7 +162,7 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
             inputs = data[:, :-1]
             targets = data[:, 1:]
 
-            with autocast_ctx():
+            with device_sel.autocast_context(enabled=use_autocast):
                 logits = model(inputs, return_loss=False)
                 # Compute unnormalized loss
                 loss_unreduced = torch.nn.functional.cross_entropy(
@@ -211,7 +206,7 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
                 data = next(val_loader).to(device)
                 inputs = data[:, :-1]
                 targets = data[:, 1:]
-                with torch.no_grad():
+                with torch.no_grad(), device_sel.autocast_context(enabled=use_autocast):
                     logits = model(inputs, return_loss=False)
                     loss_unreduced = torch.nn.functional.cross_entropy(
                         logits.reshape(-1, logits.size(-1)),
