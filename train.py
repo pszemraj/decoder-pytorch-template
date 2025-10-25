@@ -13,7 +13,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from decoder_pytorch import Llama, configure_tf32, model_summary
+from decoder_pytorch import Llama, get_optimal_device, model_summary
 
 
 # Data utilities
@@ -65,9 +65,11 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
-    # Setup
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    configure_tf32()  # Enable TF32 for Ampere+ GPUs
+    # Setup device
+    device_sel = get_optimal_device(enable_tf32=True)  # Auto-detects cuda/mps/cpu
+    device = device_sel.device
+    print(f"Device: {device_sel.device_info}")
+
     if config.get("seed"):
         torch.manual_seed(config["seed"])
 
@@ -99,11 +101,13 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     model_summary(model, max_depth=3, show_param_shapes=True)
 
     # Optimizer
+    # Fused optimizer is available for CUDA only (not MPS or CPU)
+    use_fused = device_sel.device_type == "cuda"
     optimizer = Adam(
         model.parameters(),
         lr=config.get("learning_rate", 1e-3),
         weight_decay=config.get("weight_decay", 0.0),
-        fused=torch.cuda.is_available(),
+        fused=use_fused,
     )
 
     # Training state
@@ -151,7 +155,9 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
             inputs = data[:, :-1]
             targets = data[:, 1:]
 
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
+            with torch.autocast(
+                device_type=device_sel.device_type, dtype=device_sel.amp_dtype
+            ):
                 logits = model(inputs, return_loss=False)
                 # Compute unnormalized loss
                 loss_unreduced = torch.nn.functional.cross_entropy(

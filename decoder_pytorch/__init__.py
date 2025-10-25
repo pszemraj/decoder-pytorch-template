@@ -1,5 +1,6 @@
 """Llama-style transformer for language modeling experiments."""
 
+from .device import DeviceSelection, get_optimal_device
 from .llama import Llama
 from .utils import (
     configure_tf32,
@@ -24,4 +25,7 @@ __all__ = [
     # Torch utilities
     "configure_tf32",
     "model_summary",
+    # Device utilities
+    "DeviceSelection",
+    "get_optimal_device",
 ]
