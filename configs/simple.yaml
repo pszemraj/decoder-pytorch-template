@@ -12,6 +12,7 @@ tied_embedding: true # share in/out embeddings
 ffn_dim_multiplier: 1.5 # hidden dim multiplier --> FFN size (here, 768)
 flash_attn: true # use flash attn (through torch api)
 compile: false # speed up training
+use_autocast: true # enable mixed precision (bfloat16)
 
 # Training
 num_batches: 100000 # total steps

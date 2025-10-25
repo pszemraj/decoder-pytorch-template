@@ -10,6 +10,7 @@ dim_head: 32
 tied_embedding: true
 flash_attn: true
 compile: false
+use_autocast: true
 
 # Quick training
 num_batches: 10

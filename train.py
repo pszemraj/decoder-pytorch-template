@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -69,6 +70,17 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     device_sel = get_optimal_device(enable_tf32=True)  # Auto-detects cuda/mps/cpu
     device = device_sel.device
     print(f"Device: {device_sel.device_info}")
+
+    # Setup autocast context
+    use_autocast = config.get("use_autocast", True)
+    if use_autocast:
+        autocast_ctx = lambda: torch.autocast(
+            device_type=device_sel.device_type, dtype=device_sel.amp_dtype
+        )
+        print(f"Mixed precision: enabled ({device_sel.amp_dtype})")
+    else:
+        autocast_ctx = lambda: nullcontext()
+        print("Mixed precision: disabled (full fp32)")
 
     if config.get("seed"):
         torch.manual_seed(config["seed"])
@@ -155,9 +167,7 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
             inputs = data[:, :-1]
             targets = data[:, 1:]
 
-            with torch.autocast(
-                device_type=device_sel.device_type, dtype=device_sel.amp_dtype
-            ):
+            with autocast_ctx():
                 logits = model(inputs, return_loss=False)
                 # Compute unnormalized loss
                 loss_unreduced = torch.nn.functional.cross_entropy(
