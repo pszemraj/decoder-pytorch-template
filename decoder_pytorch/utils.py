@@ -151,13 +151,19 @@ class _LayerSummary:
 
 
 def model_summary(
-    model: nn.Module, max_depth: int = 4, show_param_shapes: bool = False
+    model: nn.Module,
+    max_depth: int = 4,
+    show_param_shapes: bool = False,
+    show_frozen_breakdown: bool = False,
 ) -> None:
     """Print hierarchical summary of model with parameter counts.
 
     :param model: PyTorch model to summarize
     :param max_depth: Maximum depth of hierarchy to display
     :param show_param_shapes: Whether to show parameter shapes
+    :param show_frozen_breakdown: If True, display separate trainable/frozen counts
+        per module. Defaults to False for a simpler view that highlights whether
+        a module is fully trainable, fully frozen, or mixed.
     """
 
     # ---------- formatting helpers ----------
@@ -248,15 +254,60 @@ def model_summary(
             max(len(_format_shape(s.param_shape)) for s in summary_list),
         )
 
-    params_col_width = 12
-    trainable_col_width = 10
-    col_spacing = "  "
+    params_col_width = max(
+        len("Param #"),
+        max(len(_format_number(s.inclusive_total_params)) for s in summary_list),
+    )
 
     header_parts = [f"{'Layer (type)':<{name_col_width}}"]
     if show_param_shapes:
         header_parts.append(f"{'Param Shape':>{shape_col_width}}")
+
     header_parts.append(f"{'Param #':>{params_col_width}}")
-    header_parts.append(f"{'Trainable':>{trainable_col_width}}")
+
+    if show_frozen_breakdown:
+        trainable_col_width = max(
+            len("Trainable #"),
+            max(
+                len(_format_number(s.inclusive_trainable_params)) for s in summary_list
+            ),
+        )
+        frozen_col_width = max(
+            len("Frozen #"),
+            max(
+                len(
+                    _format_number(
+                        s.inclusive_total_params - s.inclusive_trainable_params
+                    )
+                )
+                for s in summary_list
+            ),
+        )
+        header_parts.append(f"{'Trainable #':>{trainable_col_width}}")
+        header_parts.append(f"{'Frozen #':>{frozen_col_width}}")
+    else:
+
+        def _grad_state(total: int, trainable: int) -> str:
+            if trainable == 0:
+                return "frozen"
+            if trainable == total:
+                return "trainable"
+            return "mixed"
+
+        grad_states = [
+            _grad_state(
+                s.inclusive_total_params,
+                s.inclusive_trainable_params,
+            )
+            for s in summary_list
+        ]
+        grad_state_width = max(
+            len("Grad State"), max(len(state) for state in grad_states)
+        )
+        header_parts.append(f"{'Grad State':>{grad_state_width}}")
+
+    col_spacing = "  "
+
     header = col_spacing.join(header_parts)
     sep = "=" * len(header)
 
@@ -268,7 +319,15 @@ def model_summary(
         if show_param_shapes:
             parts.append(f"{_format_shape(e.param_shape):>{shape_col_width}}")
         parts.append(f"{_format_number(e.inclusive_total_params):>{params_col_width}}")
-        parts.append(f"{str(e.inclusive_trainable_params > 0):>{trainable_col_width}}")
+        if show_frozen_breakdown:
+            parts.append(
+                f"{_format_number(e.inclusive_trainable_params):>{trainable_col_width}}"
+            )
+            frozen = e.inclusive_total_params - e.inclusive_trainable_params
+            parts.append(f"{_format_number(frozen):>{frozen_col_width}}")
+        else:
+            state = _grad_state(e.inclusive_total_params, e.inclusive_trainable_params)
+            parts.append(f"{state:>{grad_state_width}}")
         print(col_spacing.join(parts))
     print(sep)
     print(f"Total params: {_format_number(total_params)}")

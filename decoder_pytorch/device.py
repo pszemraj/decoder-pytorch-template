@@ -10,7 +10,6 @@ from typing import ContextManager, Iterable, Optional, Tuple
 
 import torch
 
-
 __all__ = ["DeviceSelection", "get_optimal_device"]
 
 
