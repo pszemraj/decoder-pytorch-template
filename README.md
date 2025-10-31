@@ -20,7 +20,7 @@ Train on the [included enwik8 dataset](data/README.md), character-level modeling
 # 100k batches on enwik8, 35M param Llama
 python train.py --config configs/simple.yaml
 
-# Nano run for CPU / MPS shakedowns (10k steps, ~20M params)
+# Nano run for CPU / MPS shakedowns (10k steps, L6 · H384 · ~9M params)
 python train.py --config configs/nano.yaml
 
 # Quick smoke test (tiny model, 10 batches)

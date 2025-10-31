@@ -1,16 +1,16 @@
-# Smaller than simple, larger than test
+# Smaller than simple, larger than test (L6 · H384 · ~9M params)
 run_dir: runs/nano
 
 # Model
 num_tokens: 256
-dim: 256
-depth: 8
-heads: 8
-dim_head: 32
+dim: 384
+depth: 6
+heads: 6
+dim_head: 64
 tied_embedding: true
 ffn_dim_multiplier: 1.5
 flash_attn: true
-compile: false # true to compile model (faster)
+compile: true  # turn off if torch.compile is unavailable
 use_autocast: true
 
 # Training schedule
