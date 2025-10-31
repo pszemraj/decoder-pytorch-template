@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -108,36 +109,85 @@ def top_p_filter(logits: Tensor, p: float = 0.9) -> Tensor:
 # --------------------------------------------------------------------------
 
 
-def configure_tf32() -> bool:
-    """Enable TF32 precision for GPUs with compute capability >= 8.0 (Ampere+).
+def _mps_available() -> bool:
+    """Return True if MPS is available."""
+    return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
-    Uses the PyTorch 2.9+ API for TF32 configuration.
 
-    :return: True if TF32 was enabled, False otherwise
+def get_optimal_device(
+    force: Optional[str] = None,
+) -> Tuple[torch.device, str, torch.dtype]:
+    """Return best available accelerator (device, device_type, amp_dtype).
+
+    The function tries CUDA → MPS → CPU, unless the user forces a choice via
+    the ``force`` argument or the ``FORCE_DEVICE`` environment variable. The
+    return value is intentionally simple—a tuple that works well with tuple
+    unpacking in training scripts.
     """
-    if not torch.cuda.is_available():
-        print("No GPU detected, running on CPU.")
-        return False
 
-    try:
-        device = torch.cuda.current_device()
-        capability = torch.cuda.get_device_capability(device)
-        major, minor = capability
-        gpu_name = torch.cuda.get_device_name(device)
+    def _normalize(device_str: str) -> str:
+        return device_str.split(":", 1)[0]
 
-        if major >= 8:
-            # PyTorch 2.9+ API for TF32 configuration
-            torch.backends.cudnn.conv.fp32_precision = "tf32"
-            torch.backends.cuda.matmul.fp32_precision = "tf32"
-            print(f"{gpu_name} (compute {major}.{minor}) - TF32 enabled")
-            return True
+    requested = (force or os.getenv("FORCE_DEVICE", "")).strip().lower()
+    valid_types = {"cuda", "mps", "cpu"}
+
+    if requested:
+        requested_type = _normalize(requested)
+        if requested_type not in valid_types:
+            print(
+                f"Warning: unsupported FORCE_DEVICE='{requested}'. "
+                "Falling back to auto-detect."
+            )
+            requested = ""
+        elif requested_type == "cuda" and not torch.cuda.is_available():
+            print("Warning: CUDA requested but not available, falling back.")
+            requested = ""
+        elif requested_type == "mps" and not _mps_available():
+            print("Warning: MPS requested but not available, falling back.")
+            requested = ""
+
+    if requested:
+        try:
+            device = torch.device(requested)
+        except (RuntimeError, ValueError) as err:
+            print(f"Warning: could not create device '{requested}' ({err}).")
+            requested = ""
         else:
-            print(f"{gpu_name} (compute {major}.{minor}) - TF32 not supported")
-            return False
+            device_type = _normalize(requested)
+            if device_type == "cuda":
+                index = device.index or 0
+                device_count = torch.cuda.device_count()
+                if index >= device_count:
+                    print(
+                        f"Warning: CUDA index {index} unavailable "
+                        f"(found {device_count} device(s)). Falling back."
+                    )
+                    requested = ""
+                else:
+                    name = torch.cuda.get_device_name(index)
+                    print(f"Using CUDA device {index}: {name}")
+                    return device, "cuda", torch.bfloat16
+            elif device_type == "mps":
+                print("Using Apple Silicon (MPS)")
+                return device, "mps", torch.bfloat16
+            else:
+                print("Using CPU (forced)")
+                return device, "cpu", torch.bfloat16
 
-    except Exception as e:
-        print(f"Error: failed to configure GPU: {e}")
-        return False
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        name = torch.cuda.get_device_name(0)
+        print(f"Using CUDA: {name}")
+        return device, "cuda", torch.bfloat16
+
+    if _mps_available():
+        device = torch.device("mps")
+        print("Using Apple Silicon (MPS)")
+        return device, "mps", torch.bfloat16
+
+    device = torch.device("cpu")
+    print("Using CPU (no GPU acceleration available)")
+    return device, "cpu", torch.bfloat16
 
 
 @dataclass

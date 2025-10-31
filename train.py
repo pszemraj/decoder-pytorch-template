@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -66,16 +67,34 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
         config = yaml.safe_load(f)
 
     # Setup device
-    device_sel = get_optimal_device(enable_tf32=True)  # Auto-detects cuda/mps/cpu
-    device = device_sel.device
-    print(f"Device: {device_sel.device_info}")
+    device, device_type, amp_dtype = get_optimal_device()
+    print(f"Device: {device}")
+
+    device_caps = {
+        "supports_fused_optimizer": device_type == "cuda",
+        "supports_flash_attn": device_type in ("cuda", "mps"),
+        "stable_autocast": device_type != "mps",
+    }
 
     # Setup autocast context
     use_autocast = bool(config.get("use_autocast", True))
-    if use_autocast:
-        print(f"Mixed precision: enabled ({device_sel.amp_dtype})")
-    else:
-        print("Mixed precision: disabled (full fp32)")
+    if use_autocast and not device_caps["stable_autocast"]:
+        print("Warning: autocast can be unstable on MPS; disabling mixed precision.")
+        use_autocast = False
+
+    if use_autocast and device_type == "cpu":
+        print("Warning: autocast has no benefit on CPU; disabling mixed precision.")
+        use_autocast = False
+
+    def autocast_context():
+        if use_autocast and device_type != "cpu":
+            return torch.autocast(device_type=device_type, dtype=amp_dtype)
+        return nullcontext()
+
+    print(
+        f"Mixed precision: {'enabled' if use_autocast else 'disabled'}"
+        f"{f' ({amp_dtype})' if use_autocast else ' (full fp32)'}"
+    )
 
     if config.get("seed"):
         torch.manual_seed(config["seed"])
@@ -94,6 +113,15 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     val_loader = cycle(val_loader)
 
     # Create model
+    flash_attn_requested = config.get("flash_attn")
+    if flash_attn_requested is None:
+        flash_attn_requested = device_caps["supports_flash_attn"]
+    elif flash_attn_requested and not device_caps["supports_flash_attn"]:
+        print(
+            "Warning: flash attention requested but not supported on this device; using standard attention."
+        )
+        flash_attn_requested = False
+
     model = Llama(
         num_tokens=config.get("num_tokens", 256),
         dim=config.get("dim", 512),
@@ -102,19 +130,18 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
         dim_head=config.get("dim_head", 64),
         tied_embedding=config.get("tied_embedding", True),
         ffn_dim_multiplier=config.get("ffn_dim_multiplier"),
-        flash_attn=config.get("flash_attn", True),
+        flash_attn=bool(flash_attn_requested),
     ).to(device)
 
     model_summary(model, max_depth=3, show_param_shapes=True)
 
     # Optimizer
     # Fused optimizer is available for CUDA only (not MPS or CPU)
-    use_fused = device_sel.device_type == "cuda"
     optimizer = Adam(
         model.parameters(),
         lr=config.get("learning_rate", 1e-3),
         weight_decay=config.get("weight_decay", 0.0),
-        fused=use_fused,
+        fused=device_caps["supports_fused_optimizer"],
     )
 
     # Training state
@@ -151,7 +178,9 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
         model.train()
 
         # Training step with gradient accumulation
-        # Accumulate raw losses and token counts for correct normalization
+        # Accumulate raw losses and token counts for correct normalization.
+        # Critical pitfall: normalizing each micro-batch separately leads to
+        # incorrect gradients. Sum first, divide once at the end.
         total_loss_sum = 0
         total_tokens = 0
         loss_accumulator = None  # Keep gradient graph alive
@@ -162,7 +191,7 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
             inputs = data[:, :-1]
             targets = data[:, 1:]
 
-            with device_sel.autocast_context(enabled=use_autocast):
+            with autocast_context():
                 logits = model(inputs, return_loss=False)
                 # Compute unnormalized loss
                 loss_unreduced = torch.nn.functional.cross_entropy(
@@ -206,7 +235,7 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
                 data = next(val_loader).to(device)
                 inputs = data[:, :-1]
                 targets = data[:, 1:]
-                with torch.no_grad(), device_sel.autocast_context(enabled=use_autocast):
+                with torch.no_grad(), autocast_context():
                     logits = model(inputs, return_loss=False)
                     loss_unreduced = torch.nn.functional.cross_entropy(
                         logits.reshape(-1, logits.size(-1)),
