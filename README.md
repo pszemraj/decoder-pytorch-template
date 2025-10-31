@@ -20,7 +20,7 @@ Train on the [included enwik8 dataset](data/README.md), character-level modeling
 # 100k batches on enwik8, 35M param Llama
 python train.py --config configs/simple.yaml
 
-# Nano run for CPU / MPS quick checks (~30 seconds)
+# Nano run for CPU / MPS shakedowns (10k steps, ~20M params)
 python train.py --config configs/nano.yaml
 
 # Quick smoke test (tiny model, 10 batches)
@@ -31,15 +31,15 @@ python train.py --config configs/test.yaml
 
 - The training script calls `decoder_pytorch.get_optimal_device()` which prefers `cuda → mps → cpu`, returning `(device, device_type, amp_dtype)` and printing the accelerator picked.
 - Override detection with `FORCE_DEVICE=cuda`, `FORCE_DEVICE=cpu`, or even `FORCE_DEVICE=cuda:1` to pick a specific index (also available as the `force=` argument).
-- Mixed precision uses `torch.autocast` with `torch.bfloat16` when it provides a benefit; CPU and unstable MPS paths disable autocast automatically.
+- Mixed precision uses `torch.autocast` with `torch.bfloat16`; toggle via config if you want full fp32.
 
 ## Device Support
 
-| Device        | Status | Notes                                              |
-|---------------|--------|----------------------------------------------------|
-| NVIDIA GPU    | ✅     | Best performance, fused optimizer & flash attention |
-| Apple Silicon | ✅     | Good performance, autocast can be flaky             |
-| CPU           | ✅     | Slow but works; use `configs/nano.yaml`             |
+| Device        | Status | Notes                                               |
+| ------------- | ------ | --------------------------------------------------- |
+| NVIDIA GPU    | ✅      | Best performance, fused optimizer & flash attention |
+| Apple Silicon | ✅      | Good performance, autocast can be flaky             |
+| CPU           | ✅      | Slow but works; use `configs/nano.yaml`             |
 
 ## Structure
 

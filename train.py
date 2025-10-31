@@ -73,21 +73,13 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     device_caps = {
         "supports_fused_optimizer": device_type == "cuda",
         "supports_flash_attn": device_type in ("cuda", "mps"),
-        "stable_autocast": device_type != "mps",
     }
 
     # Setup autocast context
     use_autocast = bool(config.get("use_autocast", True))
-    if use_autocast and not device_caps["stable_autocast"]:
-        print("Warning: autocast can be unstable on MPS; disabling mixed precision.")
-        use_autocast = False
-
-    if use_autocast and device_type == "cpu":
-        print("Warning: autocast has no benefit on CPU; disabling mixed precision.")
-        use_autocast = False
 
     def autocast_context():
-        if use_autocast and device_type != "cpu":
+        if use_autocast:
             return torch.autocast(device_type=device_type, dtype=amp_dtype)
         return nullcontext()
 
