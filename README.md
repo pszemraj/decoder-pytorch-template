@@ -20,9 +20,26 @@ Train on the [included enwik8 dataset](data/README.md), character-level modeling
 # 100k batches on enwik8, 35M param Llama
 python train.py --config configs/simple.yaml
 
-# Quick test (tiny model, 10 batches)
+# Nano run for CPU / MPS shakedowns (10k steps, L6 · H384 · ~9M params)
+python train.py --config configs/nano.yaml
+
+# Quick smoke test (tiny model, 10 batches)
 python train.py --config configs/test.yaml
 ```
+
+## Device Selection & Precision
+
+- The training script calls `decoder_pytorch.get_optimal_device()` which prefers `cuda → mps → cpu`, returning `(device, device_type, amp_dtype)` and printing the accelerator picked.
+- Override detection with `FORCE_DEVICE=cuda`, `FORCE_DEVICE=cpu`, or even `FORCE_DEVICE=cuda:1` to pick a specific index (also available as the `force=` argument).
+- Mixed precision uses `torch.autocast` with `torch.bfloat16`; toggle via config if you want full fp32.
+
+## Device Support
+
+| Device        | Status | Notes                                               |
+| ------------- | ------ | --------------------------------------------------- |
+| NVIDIA GPU    | ✅      | Best performance, fused optimizer & flash attention |
+| Apple Silicon | ✅      | Good performance, autocast can be flaky             |
+| CPU           | ✅      | Slow but works; use `configs/nano.yaml`             |
 
 ## Structure
 
@@ -30,9 +47,10 @@ python train.py --config configs/test.yaml
 decoder-pytorch-template/
 ├── decoder_pytorch/     # Model implementation
 │   ├── llama.py        # Llama architecture
-│   └── utils.py        # Sampling utilities
+│   └── utils.py        # Sampling & device helpers
 ├── configs/            # Training configs
 │   ├── simple.yaml     # Default config
+│   ├── nano.yaml       # Quick CPU/MPS config
 │   └── test.yaml       # Quick test config
 ├── data/
 │   └── enwik8.gz       # Character-level dataset
@@ -61,7 +79,7 @@ To add your own model architecture:
 4. **Update training script**: Modify `train.py` line 16 and 88:
 
    ```python
-   from decoder_pytorch import YourModel, configure_tf32, model_summary
+   from decoder_pytorch import YourModel, model_summary
    # ...
    model = YourModel(
        num_tokens=config.get("num_tokens", 256),
@@ -113,7 +131,7 @@ Dependencies:
 - einops, pyyaml, tqdm
 - [rotary-embedding-torch](https://github.com/lucidrains/rotary-embedding-torch)
 
-[^2]: If using PyTorch <2.9, you'll need to modify the TF32 configuration in `decoder_pytorch/utils.py` to use the legacy API (`torch.set_float32_matmul_precision("high")`) or skip TF32 setup entirely.
+[^2]: If using PyTorch <2.9, you may need to adjust the bfloat16/autocast behaviour or fall back to full fp32 depending on hardware support.
 
 ## License
 

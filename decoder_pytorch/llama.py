@@ -140,6 +140,11 @@ class Attention(nn.Module):
         self.dim_head = dim_head
         self.causal = causal
         self.flash_attn = flash_attn
+        if self.flash_attn and not self._flash_attn_available():
+            print(
+                "Warning: Flash attention requested but not available, using standard attention."
+            )
+            self.flash_attn = False
         self.max_seq_len = max_seq_len
 
         inner_dim = heads * dim_head
@@ -157,6 +162,20 @@ class Attention(nn.Module):
 
         # Register causal mask buffer (will be created on first use)
         self.register_buffer("causal_mask", None, persistent=False)
+
+    def _flash_attn_available(self) -> bool:
+        """Return True if flash attention kernels are available."""
+        if torch.cuda.is_available():
+            return True
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return True
+        dynamo = getattr(torch, "_dynamo", None)
+        if dynamo is not None:
+            try:
+                return bool(dynamo.is_compiling())
+            except Exception:
+                return False
+        return False
 
     def forward(
         self,

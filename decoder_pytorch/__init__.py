@@ -2,7 +2,7 @@
 
 from .llama import Llama
 from .utils import (
-    configure_tf32,
+    get_optimal_device,
     gumbel_noise,
     gumbel_sample,
     log,
@@ -22,6 +22,6 @@ __all__ = [
     "top_k_filter",
     "top_p_filter",
     # Torch utilities
-    "configure_tf32",
     "model_summary",
+    "get_optimal_device",
 ]

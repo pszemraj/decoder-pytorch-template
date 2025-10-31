@@ -1,0 +1,36 @@
+# Smaller than simple, larger than test (L6 · H384 · ~9M params)
+run_dir: runs/nano
+
+# Model
+num_tokens: 256
+dim: 384
+depth: 6
+heads: 6
+dim_head: 64
+tied_embedding: true
+ffn_dim_multiplier: 1.5
+flash_attn: true
+compile: true  # turn off if torch.compile is unavailable
+use_autocast: true
+
+# Training schedule
+num_batches: 10000
+batch_size: 1
+grad_accum_every: 16
+learning_rate: 0.002
+weight_decay: 0.0003
+grad_clip_norm: 1.0
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 512
+
+# training/validation/generation
+validate_every: 250
+val_batches: 20
+generate_every: 250
+save_every: 2000
+temperature: 1.0
+min_p: 0.1
+
+seed: 7

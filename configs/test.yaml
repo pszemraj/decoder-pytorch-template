@@ -10,6 +10,7 @@ dim_head: 32
 tied_embedding: true
 flash_attn: true
 compile: false
+use_autocast: true
 
 # Quick training
 num_batches: 10
@@ -28,5 +29,4 @@ val_batches: 50
 generate_every: 1000  # Don't generate during test
 save_every: 1000  # Don't save during test
 
-# Random seed for reproducibility
-seed: 42
+seed: 7
