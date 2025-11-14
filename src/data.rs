@@ -19,7 +19,7 @@ impl CharDataset {
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let data = fs::read(path.as_ref())
             .with_context(|| format!("Failed to read file: {:?}", path.as_ref()))?;
-        
+
         Ok(Self {
             data,
             sequence_length: 512, // default
@@ -61,17 +61,14 @@ impl Dataset<TextItem> for CharDataset {
 
         // Extract sequence
         let sequence = &self.data[start..end];
-        
+
         // Input is all but last token, target is all but first token
         let input: Vec<i64> = sequence[..self.sequence_length]
             .iter()
             .map(|&b| b as i64)
             .collect();
-        
-        let target: Vec<i64> = sequence[1..]
-            .iter()
-            .map(|&b| b as i64)
-            .collect();
+
+        let target: Vec<i64> = sequence[1..].iter().map(|&b| b as i64).collect();
 
         Some(TextItem { input, target })
     }
@@ -101,49 +98,35 @@ impl TextBatcher {
     }
 }
 
-impl<B: Backend> Batcher<TextItem, TextBatch<B>> for TextBatcher {
-    fn batch(&self, items: Vec<TextItem>) -> TextBatch<B> {
+impl<B: Backend> Batcher<B, TextItem, TextBatch<B>> for TextBatcher {
+    fn batch(&self, mut items: Vec<TextItem>, device: &B::Device) -> TextBatch<B> {
         let batch_size = items.len();
-        let device = B::Device::default();
 
         // Flatten all inputs and targets
         let mut input_data = Vec::with_capacity(batch_size * self.sequence_length);
         let mut target_data = Vec::with_capacity(batch_size * self.sequence_length);
 
-        for item in items {
-            // Ensure consistent sequence length
-            let input = if item.input.len() >= self.sequence_length {
-                &item.input[..self.sequence_length]
-            } else {
-                // Pad if necessary
-                let mut padded = item.input;
-                padded.resize(self.sequence_length, 0);
-                input_data.extend_from_slice(&padded);
-                continue;
-            };
+        for item in items.iter_mut() {
+            if item.input.len() < self.sequence_length {
+                item.input.resize(self.sequence_length, 0);
+            }
+            if item.target.len() < self.sequence_length {
+                item.target.resize(self.sequence_length, 0);
+            }
 
-            let target = if item.target.len() >= self.sequence_length {
-                &item.target[..self.sequence_length]
-            } else {
-                let mut padded = item.target;
-                padded.resize(self.sequence_length, 0);
-                target_data.extend_from_slice(&padded);
-                continue;
-            };
-
-            input_data.extend_from_slice(input);
-            target_data.extend_from_slice(target);
+            input_data.extend_from_slice(&item.input[..self.sequence_length]);
+            target_data.extend_from_slice(&item.target[..self.sequence_length]);
         }
 
         // Create tensors
         let tokens = Tensor::<B, 2, Int>::from_data(
             TensorData::new(input_data, [batch_size, self.sequence_length]),
-            &device,
+            device,
         );
 
         let targets = Tensor::<B, 2, Int>::from_data(
             TensorData::new(target_data, [batch_size, self.sequence_length]),
-            &device,
+            device,
         );
 
         TextBatch { tokens, targets }
@@ -167,7 +150,8 @@ impl WikiDataset {
 
         let mut decoder = GzDecoder::new(file);
         let mut data = Vec::new();
-        decoder.read_to_end(&mut data)
+        decoder
+            .read_to_end(&mut data)
             .context("Failed to decompress data")?;
 
         // Split 90/10 for train/val
@@ -228,7 +212,7 @@ impl Tokenizer for ByteTokenizer {
                 }
             })
             .collect();
-        
+
         String::from_utf8_lossy(&bytes).to_string()
     }
 
@@ -245,10 +229,10 @@ mod tests {
     fn test_byte_tokenizer() {
         let tokenizer = ByteTokenizer;
         let text = "Hello, World!";
-        
+
         let tokens = tokenizer.encode(text);
         let decoded = tokenizer.decode(&tokens);
-        
+
         assert_eq!(text, decoded);
         assert_eq!(tokenizer.vocab_size(), 256);
     }
@@ -257,9 +241,9 @@ mod tests {
     fn test_char_dataset() {
         let text = "The quick brown fox jumps over the lazy dog.";
         let dataset = CharDataset::from_text(text, 10);
-        
+
         assert!(dataset.len() > 0);
-        
+
         if let Some(item) = dataset.get(0) {
             assert_eq!(item.input.len(), 10);
             assert_eq!(item.target.len(), 10);

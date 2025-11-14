@@ -11,7 +11,7 @@ use log::info;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-    
+
     /// Verbosity level
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -24,49 +24,49 @@ enum Commands {
         /// Configuration preset (test, nano, small)
         #[arg(short, long, default_value = "nano")]
         preset: String,
-        
+
         /// Path to custom config file (overrides preset)
         #[arg(short, long)]
         config: Option<String>,
-        
+
         /// Override batch size
         #[arg(long)]
         batch_size: Option<usize>,
-        
+
         /// Override learning rate
         #[arg(long)]
         learning_rate: Option<f64>,
-        
+
         /// Override number of epochs
         #[arg(long)]
         epochs: Option<usize>,
     },
-    
+
     /// Generate text from a trained model
     Generate {
         /// Path to model checkpoint
         #[arg(short, long)]
         checkpoint: String,
-        
+
         /// Input prompt
         #[arg(short, long, default_value = "Once upon a time")]
         prompt: String,
-        
+
         /// Maximum generation length
         #[arg(long, default_value = "100")]
         max_length: usize,
-        
+
         /// Temperature for sampling
         #[arg(long, default_value = "0.8")]
         temperature: f32,
     },
-    
+
     /// Evaluate a model on validation data
     Evaluate {
         /// Path to model checkpoint
         #[arg(short, long)]
         checkpoint: String,
-        
+
         /// Path to validation data
         #[arg(long)]
         data: String,
@@ -79,20 +79,19 @@ type AutodiffBackend = Autodiff<Backend>;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     // Initialize logging
     let log_level = match cli.verbose {
         0 => "info",
         1 => "debug",
         _ => "trace",
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level))
-        .init();
-    
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+
     // Get device
     let device = burn::backend::wgpu::WgpuDevice::default();
     info!("Using device: {:?}", device);
-    
+
     match cli.command {
         Commands::Train {
             preset,
@@ -117,7 +116,7 @@ fn main() -> Result<()> {
                     }
                 }
             };
-            
+
             // Apply overrides
             if let Some(bs) = batch_size {
                 training_config = training_config.with_batch_size(bs);
@@ -131,11 +130,11 @@ fn main() -> Result<()> {
                 training_config = training_config.with_num_epochs(e);
                 info!("Overriding epochs to: {}", e);
             }
-            
+
             info!("Starting training with config: {:#?}", training_config);
             train::<AutodiffBackend>(training_config, device)?;
         }
-        
+
         Commands::Generate {
             checkpoint,
             prompt,
@@ -145,23 +144,20 @@ fn main() -> Result<()> {
             info!("Loading model from: {}", checkpoint);
             info!("Generating text from prompt: '{}'", prompt);
             info!("Max length: {}, Temperature: {}", max_length, temperature);
-            
+
             // Load model and generate
             generate_text(checkpoint, prompt, max_length, temperature, device)?;
         }
-        
-        Commands::Evaluate {
-            checkpoint,
-            data,
-        } => {
+
+        Commands::Evaluate { checkpoint, data } => {
             info!("Evaluating model: {}", checkpoint);
             info!("Using data: {}", data);
-            
+
             // Evaluate model
             evaluate_model(checkpoint, data, device)?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -179,14 +175,16 @@ fn generate_text(
     _device: burn::backend::wgpu::WgpuDevice,
 ) -> Result<()> {
     // TODO: Implement model loading and generation
-    info!("Generating {} tokens from '{}' with temperature {}", 
-          max_length, prompt, temperature);
-    
+    info!(
+        "Generating {} tokens from '{}' with temperature {}",
+        max_length, prompt, temperature
+    );
+
     // Placeholder implementation
     println!("\n=== Generated Text ===");
     println!("{} [generation would continue here...]", prompt);
     println!("===================\n");
-    
+
     Ok(())
 }
 
@@ -197,6 +195,6 @@ fn evaluate_model(
 ) -> Result<()> {
     // TODO: Implement model evaluation
     info!("Model evaluation not yet implemented");
-    
+
     Ok(())
 }
