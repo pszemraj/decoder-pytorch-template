@@ -171,16 +171,16 @@ impl WikiDataset {
         })
     }
 
-    pub fn train_dataset(self, sequence_length: usize) -> CharDataset {
+    pub fn train_dataset(&self, sequence_length: usize) -> CharDataset {
         CharDataset {
-            data: self.train_data,
+            data: self.train_data.clone(),
             sequence_length,
         }
     }
 
-    pub fn val_dataset(self, sequence_length: usize) -> CharDataset {
+    pub fn val_dataset(&self, sequence_length: usize) -> CharDataset {
         CharDataset {
-            data: self.val_data,
+            data: self.val_data.clone(),
             sequence_length,
         }
     }

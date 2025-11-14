@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use crate::{
     config::TrainingConfig,
-    data::{CharDataset, TextBatcher},
+    data::{CharDataset, TextBatcher, WikiDataset},
     models::LlamaModel,
 };
 
@@ -35,8 +35,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         .init();
 
     // Create datasets
-    let train_dataset = CharDataset::from_file(&config.train_data)?;
-    let val_dataset = CharDataset::from_file(&config.val_data)?;
+    let (train_dataset, val_dataset) = load_datasets(&config)?;
 
     // Create data loaders
     let batcher = TextBatcher::new(config.sequence_length);
@@ -76,12 +75,20 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
             global_step: &mut global_step,
             epoch,
             device: &device,
+            max_steps: steps_limit(config.train_steps_per_epoch),
         };
         model = train_epoch(model, &mut optimizer, epoch_ctx)?;
 
         // Validation phase
         if epoch % config.val_frequency == 0 {
-            let val_loss = validate(&model, dataloader_val.as_ref(), &loss_fn, epoch, &device)?;
+            let val_loss = validate(
+                &model,
+                dataloader_val.as_ref(),
+                &loss_fn,
+                epoch,
+                &device,
+                steps_limit(config.val_steps),
+            )?;
 
             // Save checkpoint if best model
             if val_loss < best_val_loss {
@@ -117,6 +124,7 @@ struct EpochContext<'a, B: AutodiffBackend> {
     global_step: &'a mut usize,
     epoch: usize,
     device: &'a B::Device,
+    max_steps: Option<usize>,
 }
 
 /// Train for one epoch with gradient accumulation
@@ -133,7 +141,12 @@ fn train_epoch<'a, B: AutodiffBackend>(
     let mut accumulation_count = 0usize;
     let mut accumulator = GradientsAccumulator::<LlamaModel<B>>::new();
 
-    for batch in ctx.dataloader.iter() {
+    for (step, batch) in ctx.dataloader.iter().enumerate() {
+        if let Some(limit) = ctx.max_steps {
+            if step >= limit {
+                break;
+            }
+        }
         // Move batch to device
         let batch = batch.to_device(ctx.device);
 
@@ -203,11 +216,17 @@ fn validate<B: AutodiffBackend>(
     loss_fn: &CrossEntropyLoss<B>,
     epoch: usize,
     device: &B::Device,
+    max_steps: Option<usize>,
 ) -> Result<f32> {
     let mut total_loss = 0.0f32;
     let mut num_batches = 0;
 
-    for batch in dataloader.iter() {
+    for (step, batch) in dataloader.iter().enumerate() {
+        if let Some(limit) = max_steps {
+            if step >= limit {
+                break;
+            }
+        }
         let batch = batch.to_device(device);
 
         // Forward pass (no gradients needed)
@@ -350,6 +369,29 @@ fn format_num_params<B: AutodiffBackend, M: AutodiffModule<B>>(model: &M) -> Str
         format!("{:.2}K", num_params as f32 / 1_000.0)
     } else {
         format!("{}", num_params)
+    }
+}
+
+fn load_datasets(config: &TrainingConfig) -> Result<(CharDataset, CharDataset)> {
+    if config.train_data.ends_with(".gz") {
+        let wiki = WikiDataset::load_enwik8(&config.train_data)?;
+        let train = wiki.train_dataset(config.sequence_length);
+        let val = wiki.val_dataset(config.sequence_length);
+        Ok((train, val))
+    } else {
+        let train = CharDataset::from_file(&config.train_data)?
+            .with_sequence_length(config.sequence_length);
+        let val =
+            CharDataset::from_file(&config.val_data)?.with_sequence_length(config.sequence_length);
+        Ok((train, val))
+    }
+}
+
+fn steps_limit(value: usize) -> Option<usize> {
+    if value == 0 {
+        None
+    } else {
+        Some(value)
     }
 }
 

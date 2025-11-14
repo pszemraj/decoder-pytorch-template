@@ -1,36 +1,30 @@
-# Smaller than simple, larger than test (L6 · H384 · ~9M params)
-run_dir: runs/nano
+model:
+  vocab_size: 256
+  hidden_size: 384
+  n_layers: 6
+  n_heads: 6
+  intermediate_size: 1536
+  rope_theta: 10000.0
+  max_position_embeddings: 512
+  dropout: 0.0
 
-# Model
-num_tokens: 256
-dim: 384
-depth: 6
-heads: 6
-dim_head: 64
-tied_embedding: true
-ffn_dim_multiplier: 1.5
-flash_attn: true
-compile: true  # turn off if torch.compile is unavailable
-use_autocast: true
+train_data: data/enwik8.gz
+val_data: data/enwik8.gz
 
-# Training schedule
-num_batches: 10000
 batch_size: 1
-grad_accum_every: 16
-learning_rate: 0.002
+sequence_length: 512
+num_epochs: 5
+learning_rate: 0.0003
 weight_decay: 0.0003
-grad_clip_norm: 1.0
-
-# Data
-data_path: data/enwik8.gz
-seq_len: 512
-
-# training/validation/generation
-validate_every: 250
-val_batches: 20
-generate_every: 250
-save_every: 2000
-temperature: 1.0
-min_p: 0.1
-
+gradient_clip: 1.0
+gradient_accumulation_steps: 16
+val_frequency: 1
+sample_frequency: 5
+num_workers: 0
+train_steps_per_epoch: 200
+val_steps: 50
 seed: 7
+output_dir: runs/nano
+mixed_precision: true
+warmup_steps: 500
+gradient_checkpointing: false

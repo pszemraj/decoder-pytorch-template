@@ -2,7 +2,7 @@ use anyhow::Result;
 use burn::backend::{Autodiff, Wgpu};
 use burn_llama::{train, TrainingConfig};
 use clap::Parser;
-use log::info;
+use log::{info, LevelFilter};
 
 /// Minimal launcher: `cargo run --release -- configs/test.yaml`
 #[derive(Parser, Debug)]
@@ -27,11 +27,14 @@ fn main() -> Result<()> {
 
     // Initialize logging
     let log_level = match cli.verbose {
-        0 => "info",
-        1 => "debug",
-        _ => "trace",
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
     };
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).init();
+    env_logger::Builder::new()
+        .filter_level(LevelFilter::Warn)
+        .filter_module("burn_llama", log_level)
+        .init();
 
     // Get device
     let device = burn::backend::wgpu::WgpuDevice::default();

@@ -128,6 +128,14 @@ pub struct TrainingConfig {
     #[config(default = 4)]
     pub num_workers: usize,
 
+    /// Training steps per epoch (0 = iterate whole dataset)
+    #[config(default = 0)]
+    pub train_steps_per_epoch: usize,
+
+    /// Validation steps per run (0 = iterate whole dataset)
+    #[config(default = 0)]
+    pub val_steps: usize,
+
     /// Random seed
     #[config(default = 42)]
     pub seed: u64,

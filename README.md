@@ -27,30 +27,20 @@ cd burn-llama
 
 ### Training
 
-```bash
-# Quick test (2 layers, 128 dim)
-cargo run --release -- train --preset test
-
-# Nano model (6 layers, 384 dim, ~10M params)
-cargo run --release -- train --preset nano
-
-# Small model (12 layers, 768 dim, ~100M params)
-cargo run --release -- train --preset small
-
-# Custom configuration
-cargo run --release -- train --config my_config.yaml
-```
-
-### Generation
+Every experiment is defined in a YAML file under `configs/`. Point the binary at a file and it will train immediately:
 
 ```bash
-# Generate text from a checkpoint
-cargo run --release -- generate \
-    --checkpoint checkpoints/model.bin \
-    --prompt "Once upon a time" \
-    --max-length 100 \
-    --temperature 0.8
+# Fast smoke test (2 layers, seq_len 128)
+cargo run --release -- configs/test.yaml
+
+# Larger nano config (6 layers, seq_len 512)
+cargo run --release -- configs/nano.yaml
+
+# Your own experiment
+cargo run --release -- path/to/my_config.yaml
 ```
+
+Both sample configs stream the bundled `data/enwik8.gz` file, so you do not need to preprocess anything. Set `train_steps_per_epoch`/`val_steps` in the YAML to keep iterations short while prototyping.
 
 ## Configuration
 
@@ -66,6 +56,8 @@ model:
   rope_theta: 10000.0
   max_position_embeddings: 2048
 
+train_data: data/enwik8.gz   # gz is detected automatically
+val_data: data/enwik8.gz
 batch_size: 8
 sequence_length: 1024
 num_epochs: 20
@@ -73,7 +65,10 @@ learning_rate: 2e-4
 weight_decay: 0.01
 gradient_clip: 1.0
 gradient_accumulation_steps: 4
+train_steps_per_epoch: 2000   # 0 = iterate the whole dataset
+val_steps: 200
 warmup_steps: 500
+output_dir: runs/my-exp
 ```
 
 ## Key Improvements Over Original
@@ -128,15 +123,22 @@ pub struct RmsNorm<B: Backend> {
 ```
 burn-llama/
 ├── src/
-│   ├── model.rs       # Llama architecture with RoPE
+│   ├── models/
+│   │   ├── llama.rs   # Reference decoder with RoPE + SwiGLU
+│   │   └── mod.rs     # Re-export point for your custom models
 │   ├── train.rs       # Training loop with gradient accumulation
 │   ├── config.rs      # Configuration structures
 │   ├── data.rs        # Dataset and tokenization
-│   ├── lib.rs         # Module exports
-│   └── main.rs        # CLI interface
-├── Cargo.toml         # Dependencies (Burn 0.19)
-└── README.md          # This file
+│   ├── lib.rs         # Crate exports
+│   └── main.rs        # YAML-driven runner
+├── configs/           # Example experiment files
+├── data/enwik8.gz     # Sample dataset (automatically split train/val)
+└── runs/              # Output directory for checkpoints & logs
 ```
+
+### Building new decoders
+
+The goal of this repo is experimentation. The Llama reference lives in `src/models/llama.rs`; copy it to `src/models/my_model.rs`, tweak the architecture, export it through `src/models/mod.rs`, and update the trainer to instantiate your type. Each model implements the same `Module` trait so swapping between them is straightforward.
 
 ## Model Sizes
 
