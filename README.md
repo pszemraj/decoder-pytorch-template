@@ -1,61 +1,48 @@
-# Burn Llama - Modern Implementation with Burn 0.19
+# Decoder Burn Template
 
-A production-ready Llama implementation using Burn 0.19, featuring modern Rust patterns and efficient tensor operations.
+Rust re-implementation of the PyTorch decoder playground from the `main` branch: Llama baseline included, easy to hack and compare new ideas, but running on Burn 0.19 backends (WGPU, CUDA, or CPU).
 
-## Features
+## Highlights
 
-- ✅ **Modern Burn 0.19 APIs** - Uses latest tensor slicing, module patterns, and training APIs
-- ✅ **Efficient RoPE** - Tensor-based rotary embeddings (10x faster than manual loops)
-- ✅ **Proper Gradient Handling** - Correct use of `GradientsParams::from_grads()`
-- ✅ **Multiple Model Sizes** - From test (2L) to base (24L, 350M params)
-- ✅ **WebGPU Backend** - Cross-platform GPU acceleration
-- ✅ **Gradient Accumulation** - Train larger models with limited memory
-- ✅ **Mixed Precision** - Automatic with Burn's fusion backend
+- **One binary, YAML configs** - point at `configs/*.yaml` and train.
+- **Backend-agnostic** - select WGPU, CUDA, or CPU at runtime (with matching Cargo feature).
+- **Precision toggle** - run in fp32 or bf16 (autodetected from config, overridable via CLI).
+- **Llama-style decoder** - RMSNorm, SwiGLU, RoPE, causal mask, optional tied embeddings.
+- **Training parity with PyTorch** - gradient accumulation matches the Python version token-for-token.
+- **Auto dataset streaming** - includes `data/enwik8.gz`; no preprocessing required.
 
 ## Quick Start
 
-### Prerequisites
-
 ```bash
-# Install Rust 1.75+
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# Clone
+git clone https://github.com/pszemraj/decoder-pytorch-template.git
+cd decoder-pytorch-template
 
-# Clone the repository
-git clone https://github.com/yourusername/burn-llama.git
-cd burn-llama
-```
-
-### Training
-
-Every experiment is defined in a YAML file under `configs/`. Point the binary at a file and it will train immediately:
-
-```bash
-# Fast smoke test (2 layers, seq_len 128)
+# Smoke test (WGPU backend, fp32)
 cargo run --release -- configs/test.yaml
 
-# Larger nano config (6 layers, seq_len 512)
-cargo run --release -- configs/nano.yaml
+# Nano config on CUDA in bf16 (requires --features backend-cuda)
+cargo run --release --features backend-cuda -- \
+    --backend cuda --precision bf16 configs/nano.yaml
 
-# Your own experiment
+# CPU baseline (requires --features backend-cpu)
+cargo run --release --features backend-cpu -- \
+    --backend cpu --precision fp32 configs/test.yaml
+
+# Custom config
 cargo run --release -- path/to/my_config.yaml
-
-# CUDA backend (enable the feature and select the backend/precision)
-cargo run --release --features backend-cuda -- --backend cuda --precision bf16 configs/nano.yaml
-
-# CPU baseline
-cargo run --release --features backend-cpu -- --backend cpu --precision fp32 configs/test.yaml
 ```
 
-Both sample configs stream the bundled `data/enwik8.gz` file, so you do not need to preprocess anything. Set `train_steps_per_epoch`/`val_steps` in the YAML to keep iterations short while prototyping.
+Both sample configs stream `data/enwik8.gz`, randomly slicing fixed-length sequences. Use `train_steps_per_epoch` / `val_steps` to cap iterations for quick experiments.
 
-The CLI exposes two runtime toggles:
+### CLI Flags
 
-- `--backend {wgpu|cuda|cpu}` to pick the device the Autodiff backend runs on. Additional backends are gated behind Cargo features (`backend-cuda`, `backend-cpu`).
-- `--precision {fp32|bf16}` to choose the floating-point type. If omitted, the `mixed_precision` flag inside the YAML selects `bf16` when `true` and `fp32` otherwise. CPU falls back to `fp32`.
+- `--backend {wgpu|cuda|cpu}`: pick the backend. `wgpu` is default. Remember to enable the matching Cargo feature (`backend-cuda`, `backend-cpu`).
+- `--precision {fp32|bf16}`: overrides numeric precision. If omitted, the YAML's `mixed_precision` flag selects `bf16` when true, `fp32` otherwise. CPU always falls back to `fp32`.
 
-## Configuration
+## Configuration Files
 
-Create a custom `config.yaml`:
+Every entry in `configs/*.yaml` feeds directly into `TrainingConfig` and `ModelConfig`. Example:
 
 ```yaml
 model:
@@ -66,10 +53,11 @@ model:
   intermediate_size: 3072
   rope_theta: 10000.0
   max_position_embeddings: 2048
-  tie_embeddings: true
+  tie_embeddings: true  # share token embed and LM head weights
 
-train_data: data/enwik8.gz   # gz is detected automatically
+train_data: data/enwik8.gz  # .gz automatically split 90/10
 val_data: data/enwik8.gz
+
 batch_size: 8
 sequence_length: 1024
 num_epochs: 20
@@ -77,141 +65,62 @@ learning_rate: 2e-4
 weight_decay: 0.01
 gradient_clip: 1.0
 gradient_accumulation_steps: 4
-train_steps_per_epoch: 2000   # 0 = iterate the whole dataset
+train_steps_per_epoch: 2000  # 0 = iterate entire dataset
 val_steps: 200
-warmup_steps: 500
+mixed_precision: true
 output_dir: runs/my-exp
 ```
 
-## Key Improvements Over Original
-
-### 1. Modern Tensor Operations
-
-```rust
-// Old (Burn 0.15) - tuple slicing
-let slice = tensor.slice([(0, 10), (0, -1)]);
-
-// New (Burn 0.19) - Rust range syntax
-let slice = tensor.slice([0..10, 0..-1]);
-
-// Complex slicing with s! macro
-let slice = tensor.slice(s![0..10;2, .., -3..]);
-```
-
-### 2. Proper Gradient Handling
-
-```rust
-// Critical fix - convert gradients before optimizer step
-let grads = loss.backward();
-let grads = GradientsParams::from_grads(grads, &model);
-model = optimizer.step(learning_rate, model, grads);
-```
-
-### 3. Efficient RoPE Implementation
-
-```rust
-// 10x faster tensor-based rotation vs manual loops
-pub fn apply_rope<B: Backend>(
-    q: Tensor<B, 4>,
-    k: Tensor<B, 4>,
-    position_ids: Tensor<B, 1, Int>,
-    theta: f32,
-) -> (Tensor<B, 4>, Tensor<B, 4>)
-```
-
-### 4. Modern Module Pattern
-
-```rust
-#[derive(Module, Debug)]
-pub struct RmsNorm<B: Backend> {
-    weight: Param<Tensor<B, 1>>,
-    #[module(constant)]
-    eps: f32,
-}
-```
-
-## Architecture
+## Project Layout
 
 ```
-burn-llama/
+decoder-pytorch-template/
 ├── src/
 │   ├── models/
-│   │   ├── llama.rs   # Reference decoder with RoPE + SwiGLU
+│   │   ├── llama.rs   # Reference decoder (RoPE, SwiGLU, RMSNorm)
 │   │   └── mod.rs     # Re-export point for your custom models
-│   ├── train.rs       # Training loop with gradient accumulation
-│   ├── config.rs      # Configuration structures
-│   ├── data.rs        # Dataset and tokenization
-│   ├── lib.rs         # Crate exports
-│   └── main.rs        # YAML-driven runner
-├── configs/           # Example experiment files
-├── data/enwik8.gz     # Sample dataset (automatically split train/val)
-└── runs/              # Output directory for checkpoints & logs
+│   ├── train.rs       # Training loop, dataset loaders, sampling
+│   ├── data.rs        # Char dataset + gzip loader
+│   ├── config.rs      # Burn Config structs
+│   └── main.rs        # CLI entry (backend/precision switches)
+├── configs/           # YAML experiments (test, nano, …)
+├── data/enwik8.gz     # Sample dataset (character-level)
+└── runs/              # Logs + checkpoints (final.bin per run)
 ```
 
-### Building new decoders
+### Adding Your Model
 
-The goal of this repo is experimentation. The Llama reference lives in `src/models/llama.rs`; copy it to `src/models/my_model.rs`, tweak the architecture, export it through `src/models/mod.rs`, and update the trainer to instantiate your type. Each model implements the same `Module` trait so swapping between them is straightforward.
+1. Copy `src/models/llama.rs` `src/models/my_model.rs`.
+2. Adjust the architecture (attention, FFN, etc.) and expose it via `src/models/mod.rs`.
+3. In `train.rs`, swap the `LlamaModel` type alias (or add a CLI flag if you want runtime switching).
+4. Update your YAML (`model.*` field names are forwarded to the new config).
 
-## Model Sizes
+## Device & Precision Matrix
 
-| Preset | Layers | Hidden | Heads | Params | Memory |
-|--------|--------|--------|-------|--------|--------|
-| test   | 2      | 128    | 4     | ~500K  | ~2MB   |
-| nano   | 6      | 384    | 6     | ~10M   | ~40MB  |
-| small  | 12     | 768    | 12    | ~100M  | ~400MB |
-| base   | 24     | 1024   | 16    | ~350M  | ~1.4GB |
+| Backend Flag   | Runtime Flag     | Precision options | Notes                                  |
+| -------------- | ---------------- | ----------------- | -------------------------------------- |
+| `backend-wgpu` | `--backend wgpu` | fp32 / bf16       | Default build, Vulkan/WebGPU/Metal     |
+| `backend-cuda` | `--backend cuda` | fp32 / bf16       | Requires NVIDIA GPU + CUDA libs        |
+| `backend-cpu`  | `--backend cpu`  | fp32 (bf16fp32)   | Uses NdArray backend (slow but simple) |
 
-## Performance
+## Feature Parity with `train.py`
 
-### Training Speed (tokens/sec)
+- **Gradient accumulation**: Burn implementation sums per-token loss over each micro-batch (CrossEntropy returns the mean), scales by `1/grad_accum`, and only steps after `grad_accum_every` iterations-mathematically identical to PyTorch's "sum, divide once" approach. Token counts are fixed (`batch_size * seq_len`), so no scaling drift.
+- **Tied embeddings**: Configurable via `model.tie_embeddings`. When enabled, the LM head reuses the embedding weight, matching the PyTorch baseline.
+- **RoPE/SwiGLU/RMSNorm**: Same layout and initialization (Normal(0,0.02) for embeddings/head) as the original codebase.
+- **Automatic dataset handling**: `.gz` files are streamed and split 90/10, just like `load_data` in `train.py`.
+- **Checkpointing**: Each epoch logs `Step X | Epoch Y | Val loss`, saves best-in-run checkpoints, and writes `runs/<name>/final.bin` via `CompactRecorder`.
 
-| Hardware | Nano | Small | Base |
-|----------|------|-------|------|
-| RTX 4090 | 50K  | 15K   | 5K   |
-| M2 Max   | 10K  | 3K    | 1K   |
-| CPU      | 500  | 150   | 50   |
+## Tips & Troubleshooting
 
-### Memory Usage
+- **Slow hardware / limited memory**: lower `batch_size`, raise `gradient_accumulation_steps`, or reduce `sequence_length`. Use `train_steps_per_epoch` to keep epochs short.
+- **Precision mismatch**: if gradients blow up in bf16, switch the YAML's `mixed_precision` to `false` or run with `--precision fp32`.
+- **Backend missing**: recompile with the appropriate `--features backend-*` flag; WGPU is the only backend enabled by default.
+- **Custom datasets**: point `train_data` / `val_data` at your files (plain text or gzip). The `CharDataset` takes care of random slicing and padding.
 
-- **Gradient Accumulation**: Reduces memory by `accumulation_steps`
-- **Mixed Precision**: ~50% memory reduction
-- **Flash Attention**: Coming soon with CubeCL backend
+## License & Credits
 
-## Backends
-
-Burn 0.19 supports multiple backends:
-
-```toml
-# WebGPU (default, cross-platform)
-burn = { version = "0.19", features = ["wgpu"] }
-
-# CUDA via CubeCL (experimental)
-burn = { version = "0.19", features = ["cuda-jit"] }
-
-# Candle (CPU/CUDA)
-burn = { version = "0.19", features = ["candle"] }
-```
-
-## Testing
-
-```bash
-# Run all tests
-cargo test
-
-# Run with logging
-RUST_LOG=info cargo test -- --nocapture
-
-# Benchmark
-cargo bench
-```
-
-## Troubleshooting
-
-### Out of Memory
-
-1. Reduce batch size
-2. Increase gradient accumulation steps
-3. Enable gradient checkpointing
+MIT, same as the original project. Heavily inspired by the PyTorch template in `main`, ported to Burn to explore novel decoder architectures with a different toolchain.
 4. Use smaller model preset
 
 ### Slow Training
@@ -224,6 +133,7 @@ cargo bench
 ### Compilation Errors
 
 Ensure you have Burn 0.19:
+
 ```toml
 burn = { version = "0.19", features = ["std", "train", "wgpu"] }
 ```
@@ -235,11 +145,14 @@ burn = { version = "0.19", features = ["std", "train", "wgpu"] }
 - [x] Gradient accumulation
 - [x] Mixed precision training
 - [ ] Flash Attention
+- [ ] Streaming generation
+
+Maybe:
+
 - [ ] Distributed training
 - [ ] ONNX export
 - [ ] Quantization (INT8/INT4)
 - [ ] KV cache for inference
-- [ ] Streaming generation
 
 ## Contributing
 
@@ -256,17 +169,17 @@ MIT
 
 ## Acknowledgments
 
-- Burn framework: https://burn.dev
-- Original Llama paper: https://arxiv.org/abs/2302.13971
-- PyTorch template inspiration: https://github.com/pszemraj/decoder-pytorch-template
+- Burn framework: <https://burn.dev>
+- Original Llama paper: <https://arxiv.org/abs/2302.13971>
+- PyTorch template inspiration: <https://github.com/pszemraj/decoder-pytorch-template>
 
 ## Citation
 
 ```bibtex
 @software{burn_llama_2024,
   title = {Burn Llama: Modern Implementation with Burn 0.19},
-  author = {Your Name},
-  year = {2024},
-  url = {https://github.com/yourusername/burn-llama}
+  author = {Peter Szemraj},
+  year = {2025},
+  url = {https://github.com/pszemraj/decoder-burn-template}
 }
 ```
