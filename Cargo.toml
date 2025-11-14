@@ -1,0 +1,35 @@
+[package]
+name = "burn-llama"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Burn 0.19 with modern backends
+burn = { version = "0.19", features = ["std", "train", "wgpu", "fusion", "tui"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+
+# CLI and utilities
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+# Data handling
+flate2 = "1.0"
+rand = "0.8"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+inherits = "release"
