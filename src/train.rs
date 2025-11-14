@@ -10,13 +10,10 @@ use burn::{
     tensor::{activation::softmax, backend::AutodiffBackend, ElementConversion, Int, Tensor},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use std::{
-    fs,
-    time::{Duration, Instant},
-};
+use std::{fs, time::Duration};
 
 use crate::{
-    config::{ModelConfig, TrainingConfig},
+    config::TrainingConfig,
     data::{CharDataset, TextBatcher, WikiDataset},
     models::LlamaModel,
 };
@@ -28,12 +25,8 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
 
     // Initialize model
     let mut model = LlamaModel::<B>::new(config.model.clone(), &device);
-    let total_params = count_params(&model);
-    log_model_summary(&config.model, total_params);
-    log::info!(
-        "Initialized model with {} parameters",
-        format_param_count(total_params)
-    );
+    let total_params = format_param_count(count_params(&model));
+    log::info!("Total parameters: {}", total_params);
 
     // Initialize optimizer
     let mut optimizer = AdamWConfig::new()
@@ -61,7 +54,14 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     let train_step_limit = steps_limit(config.train_steps_per_epoch);
     let val_step_limit = steps_limit(config.val_steps);
     let progress_total = train_step_limit
-        .or_else(|| estimate_total_steps(dataloader_train.as_ref(), config.batch_size));
+        .map(|steps| steps.div_ceil(config.gradient_accumulation_steps))
+        .or_else(|| {
+            estimate_total_steps(
+                dataloader_train.as_ref(),
+                config.batch_size,
+                config.gradient_accumulation_steps,
+            )
+        });
 
     // Loss function
     let loss_fn = CrossEntropyLossConfig::new()
@@ -72,14 +72,12 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     // Training metrics
     let mut global_step = 0;
     let mut best_val_loss = f32::INFINITY;
-    let start_time = Instant::now();
 
     // Initial validation
     validate(
         &model,
         dataloader_val.as_ref(),
         &loss_fn,
-        0,
         &device,
         val_step_limit,
         global_step,
@@ -87,8 +85,6 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
 
     // Training loop
     for epoch in 1..=config.num_epochs {
-        log::info!("Starting epoch {}/{}", epoch, config.num_epochs);
-
         // Training phase
         let epoch_ctx = EpochContext {
             dataloader: dataloader_train.as_ref(),
@@ -96,10 +92,10 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
             learning_rate: config.learning_rate,
             gradient_accumulation_steps: config.gradient_accumulation_steps,
             global_step: &mut global_step,
-            epoch,
             device: &device,
             max_steps: train_step_limit,
             progress_total,
+            progress_label: "training",
         };
         model = train_epoch(model, &mut optimizer, epoch_ctx)?;
 
@@ -109,7 +105,6 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
                 &model,
                 dataloader_val.as_ref(),
                 &loss_fn,
-                epoch,
                 &device,
                 val_step_limit,
                 global_step,
@@ -127,15 +122,6 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         if epoch % config.sample_frequency == 0 {
             generate_samples(&model.valid(), &device)?;
         }
-
-        // Log training progress
-        let elapsed = start_time.elapsed();
-        log::info!(
-            "Epoch {} completed in {:.2}s | Best val loss: {:.4}",
-            epoch,
-            elapsed.as_secs_f32(),
-            best_val_loss
-        );
     }
 
     save_final_checkpoint(&model, &config.output_dir)?;
@@ -149,10 +135,10 @@ struct EpochContext<'a, B: AutodiffBackend> {
     learning_rate: f64,
     gradient_accumulation_steps: usize,
     global_step: &'a mut usize,
-    epoch: usize,
     device: &'a B::Device,
     max_steps: Option<usize>,
     progress_total: Option<usize>,
+    progress_label: &'a str,
 }
 
 /// Train for one epoch with gradient accumulation
@@ -170,8 +156,10 @@ fn train_epoch<'a, B: AutodiffBackend>(
     let mut accumulator = GradientsAccumulator::<LlamaModel<B>>::new();
     let mut loss_sum = 0.0f32;
     let mut token_sum = 0.0f32;
-    let progress = create_progress_bar(ctx.epoch, ctx.progress_total);
+    let progress = create_progress_bar(ctx.progress_label, ctx.progress_total);
+    progress.set_message("loss=----");
     let use_spinner = ctx.progress_total.is_none();
+    let mut displayed_loss = 0.0f32;
 
     for (step, batch) in ctx.dataloader.iter().enumerate() {
         if let Some(limit) = ctx.max_steps {
@@ -212,29 +200,20 @@ fn train_epoch<'a, B: AutodiffBackend>(
             model = optimizer.step(ctx.learning_rate, model, grads);
 
             *ctx.global_step += 1;
-            if *ctx.global_step % 10 == 0 {
-                let avg_loss = accumulated_loss / ctx.gradient_accumulation_steps as f32;
-                log::info!(
-                    "[Train] Epoch: {} | Step: {} | Loss: {:.4}",
-                    ctx.epoch,
-                    *ctx.global_step,
-                    avg_loss
-                );
-            }
-
-            accumulated_loss = 0.0;
-            accumulation_count = 0;
             let avg_loss = if token_sum > 0.0 {
                 loss_sum / token_sum
             } else {
-                0.0
+                loss_sum
             };
+            displayed_loss = avg_loss;
             if ctx.progress_total.is_some() {
                 progress.inc(1);
             } else {
                 progress.tick();
             }
             progress.set_message(format!("loss={avg_loss:.4}"));
+            accumulated_loss = 0.0;
+            accumulation_count = 0;
             loss_sum = 0.0;
             token_sum = 0.0;
         } else if use_spinner {
@@ -248,22 +227,17 @@ fn train_epoch<'a, B: AutodiffBackend>(
         model = optimizer.step(ctx.learning_rate, model, grads);
         *ctx.global_step += 1;
         let avg_loss = accumulated_loss / accumulation_count as f32;
-        log::info!(
-            "[Train] Epoch: {} | Step: {} | Loss: {:.4}",
-            ctx.epoch,
-            *ctx.global_step,
-            avg_loss
-        );
         if ctx.progress_total.is_some() {
             progress.inc(1);
         } else {
             progress.tick();
         }
         progress.set_message(format!("loss={avg_loss:.4}"));
+        displayed_loss = avg_loss;
     }
 
     if ctx.progress_total.is_some() {
-        progress.finish();
+        progress.finish_with_message(format!("loss={displayed_loss:.4}"));
     } else {
         progress.finish_and_clear();
     }
@@ -276,7 +250,6 @@ fn validate<B: Backend>(
     model: &LlamaModel<B>,
     dataloader: &dyn DataLoader<B, TextBatch<B>>,
     loss_fn: &CrossEntropyLoss<B>,
-    epoch: usize,
     device: &B::Device,
     max_steps: Option<usize>,
     global_step: usize,
@@ -306,20 +279,12 @@ fn validate<B: Backend>(
     }
 
     if num_batches == 0 {
-        log::warn!(
-            "Validation dataloader produced no batches at epoch {}. Skipping metric.",
-            epoch
-        );
+        log::warn!("Validation dataloader produced no batches. Skipping metric.");
         return Ok(f32::NAN);
     }
 
     let avg_loss = total_loss / num_batches as f32;
-    log::info!(
-        "Step {} | Epoch {} | Val loss: {:.4}",
-        global_step,
-        epoch,
-        avg_loss
-    );
+    log::info!("Step {} | Val loss: {:.4}", global_step, avg_loss);
 
     Ok(avg_loss)
 }
@@ -480,15 +445,17 @@ fn steps_limit(value: usize) -> Option<usize> {
 fn estimate_total_steps<B: Backend>(
     dataloader: &dyn DataLoader<B, TextBatch<B>>,
     batch_size: usize,
+    grad_accum: usize,
 ) -> Option<usize> {
-    if batch_size == 0 {
+    if batch_size == 0 || grad_accum == 0 {
         return None;
     }
     let items = dataloader.num_items();
     if items == 0 {
         None
     } else {
-        Some(items.div_ceil(batch_size))
+        let batches = items.div_ceil(batch_size);
+        Some(batches.div_ceil(grad_accum))
     }
 }
 
@@ -513,73 +480,26 @@ fn format_param_count(count: usize) -> String {
     }
 }
 
-fn log_model_summary(config: &ModelConfig, total_params: usize) {
-    let embed_params = config.vocab_size * config.hidden_size;
-    let attn_params = 4 * config.hidden_size * config.hidden_size;
-    let ffn_params = 3 * config.hidden_size * config.intermediate_size;
-    let norm_params = 2 * config.hidden_size;
-    let block_params = attn_params + ffn_params + norm_params;
-    let head_params = if config.tie_embeddings {
-        0
-    } else {
-        config.hidden_size * config.vocab_size
-    };
-
-    log::info!("======================================================");
-    log::info!("Layer (type)          Param Shape  Param #    Grad State");
-    log::info!(
-        "  Embedding             {:>5}x{:<5} {:>10}   trainable",
-        config.vocab_size,
-        config.hidden_size,
-        embed_params
-    );
-    log::info!(
-        "  TransformerBlock x{:>2}        {:>10}   mixed",
-        config.n_layers,
-        block_params
-    );
-    log::info!(
-        "  RMSNorm (final)                  {:>10}   trainable",
-        config.hidden_size
-    );
-    if !config.tie_embeddings {
-        log::info!(
-            "  LM Head               {:>5}x{:<5} {:>10}   trainable",
-            config.hidden_size,
-            config.vocab_size,
-            head_params
-        );
-    } else {
-        log::info!("  LM Head (tied)                    uses embedding weights");
-    }
-    log::info!("======================================================");
-    log::info!("Total params: {}", format_param_count(total_params));
-    log::info!("Trainable params: {}", format_param_count(total_params));
-    log::info!("Non-trainable params: 0");
-    log::info!("======================================================");
-}
-
-fn create_progress_bar(epoch: usize, total: Option<usize>) -> ProgressBar {
-    let prefix = format!("Epoch {}", epoch);
+fn create_progress_bar(label: &str, total: Option<usize>) -> ProgressBar {
     match total {
         Some(len) if len > 0 => {
             let pb = ProgressBar::new(len as u64);
             pb.set_style(
-                ProgressStyle::with_template("{prefix:<10} {wide_bar} {pos}/{len} [{msg}]")
+                ProgressStyle::with_template("{prefix}: {wide_bar} {pos}/{len} [{msg}]")
                     .unwrap()
                     .progress_chars("=>-"),
             );
-            pb.set_prefix(prefix);
+            pb.set_prefix(label.to_string());
             pb
         }
         _ => {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
-                ProgressStyle::with_template("{prefix:<10} {spinner} {msg}")
+                ProgressStyle::with_template("{prefix}: {spinner} {msg}")
                     .unwrap()
                     .tick_chars("/-\\| "),
             );
-            pb.set_prefix(prefix);
+            pb.set_prefix(label.to_string());
             pb.enable_steady_tick(Duration::from_millis(100));
             pb
         }

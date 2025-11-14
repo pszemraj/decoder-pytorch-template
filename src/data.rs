@@ -3,7 +3,7 @@ use burn::{
     data::{dataloader::batcher::Batcher, dataset::Dataset},
     prelude::*,
 };
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::Rng;
 use std::{fs, path::Path};
 
 use crate::train::TextBatch;
@@ -47,15 +47,15 @@ impl CharDataset {
 }
 
 impl Dataset<TextItem> for CharDataset {
-    fn get(&self, index: usize) -> Option<TextItem> {
+    fn get(&self, _index: usize) -> Option<TextItem> {
         // Ensure we have enough data for a sequence
         let max_start = self.data.len().saturating_sub(self.sequence_length + 1);
         if max_start == 0 {
             return None;
         }
 
-        // Use index as seed for deterministic but varied sampling
-        let mut rng = StdRng::seed_from_u64(index as u64);
+        // Random sampling similar to the PyTorch template
+        let mut rng = rand::thread_rng();
         let start = rng.gen_range(0..max_start);
         let end = start + self.sequence_length + 1;
 
@@ -158,12 +158,6 @@ impl WikiDataset {
         let split_idx = (data.len() as f32 * 0.9) as usize;
         let train_data = data[..split_idx].to_vec();
         let val_data = data[split_idx..].to_vec();
-
-        log::info!(
-            "Loaded enwik8: train {} bytes, val {} bytes",
-            train_data.len(),
-            val_data.len()
-        );
 
         Ok(Self {
             train_data,
