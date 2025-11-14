@@ -1,3 +1,9 @@
+//! Reference implementation for a Llama-style decoder.
+//!
+//! Use this file as a template when exploring new decoder ideas. Copy the
+//! pieces you need into `src/models/my_model.rs`, adjust the architecture, and
+//! export it through `models/mod.rs` so the trainer can pick it up.
+
 use burn::{
     module::Module,
     nn::{

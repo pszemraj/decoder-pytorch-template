@@ -13,7 +13,7 @@ use std::time::Instant;
 use crate::{
     config::TrainingConfig,
     data::{CharDataset, TextBatcher},
-    model::LlamaModel,
+    models::LlamaModel,
 };
 
 /// Modern training function using Burn 0.19 APIs
@@ -68,17 +68,16 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         log::info!("Starting epoch {}/{}", epoch, config.num_epochs);
 
         // Training phase
-        model = train_epoch(
-            model,
-            &mut optimizer,
-            dataloader_train.as_ref(),
-            &loss_fn,
-            config.learning_rate,
-            config.gradient_accumulation_steps,
-            &mut global_step,
+        let epoch_ctx = EpochContext {
+            dataloader: dataloader_train.as_ref(),
+            loss_fn: &loss_fn,
+            learning_rate: config.learning_rate,
+            gradient_accumulation_steps: config.gradient_accumulation_steps,
+            global_step: &mut global_step,
             epoch,
-            &device,
-        )?;
+            device: &device,
+        };
+        model = train_epoch(model, &mut optimizer, epoch_ctx)?;
 
         // Validation phase
         if epoch % config.val_frequency == 0 {
@@ -110,29 +109,33 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     Ok(())
 }
 
-/// Train for one epoch with gradient accumulation
-fn train_epoch<B: AutodiffBackend>(
-    mut model: LlamaModel<B>,
-    optimizer: &mut impl Optimizer<LlamaModel<B>, B>,
-    dataloader: &dyn DataLoader<B, TextBatch<B>>,
-    loss_fn: &CrossEntropyLoss<B>,
+struct EpochContext<'a, B: AutodiffBackend> {
+    dataloader: &'a dyn DataLoader<B, TextBatch<B>>,
+    loss_fn: &'a CrossEntropyLoss<B>,
     learning_rate: f64,
     gradient_accumulation_steps: usize,
-    global_step: &mut usize,
+    global_step: &'a mut usize,
     epoch: usize,
-    device: &B::Device,
+    device: &'a B::Device,
+}
+
+/// Train for one epoch with gradient accumulation
+fn train_epoch<'a, B: AutodiffBackend>(
+    mut model: LlamaModel<B>,
+    optimizer: &mut impl Optimizer<LlamaModel<B>, B>,
+    ctx: EpochContext<'a, B>,
 ) -> Result<LlamaModel<B>> {
     assert!(
-        gradient_accumulation_steps > 0,
+        ctx.gradient_accumulation_steps > 0,
         "gradient_accumulation_steps must be > 0"
     );
     let mut accumulated_loss = 0.0f32;
     let mut accumulation_count = 0usize;
     let mut accumulator = GradientsAccumulator::<LlamaModel<B>>::new();
 
-    for batch in dataloader.iter() {
+    for batch in ctx.dataloader.iter() {
         // Move batch to device
-        let batch = batch.to_device(device);
+        let batch = batch.to_device(ctx.device);
 
         // Forward pass
         let logits = model.forward(batch.tokens.clone(), 0);
@@ -143,30 +146,30 @@ fn train_epoch<B: AutodiffBackend>(
         let targets_flat = batch.targets.reshape([batch_size * seq_len]);
 
         // Calculate loss
-        let loss = loss_fn.forward(logits_flat, targets_flat);
+        let loss = ctx.loss_fn.forward(logits_flat, targets_flat);
         let loss_value = loss.clone().into_scalar().elem::<f32>();
         accumulated_loss += loss_value;
         accumulation_count += 1;
 
         // Scale loss for gradient accumulation
-        let scaled_loss = loss / gradient_accumulation_steps as f32;
+        let scaled_loss = loss / ctx.gradient_accumulation_steps as f32;
 
         // Backward pass
         let grads = GradientsParams::from_grads(scaled_loss.backward(), &model);
         accumulator.accumulate(&model, grads);
 
         // Optimizer step after accumulation
-        if accumulation_count == gradient_accumulation_steps {
+        if accumulation_count == ctx.gradient_accumulation_steps {
             let grads = accumulator.grads();
-            model = optimizer.step(learning_rate, model, grads);
+            model = optimizer.step(ctx.learning_rate, model, grads);
 
-            *global_step += 1;
-            if *global_step % 10 == 0 {
-                let avg_loss = accumulated_loss / gradient_accumulation_steps as f32;
+            *ctx.global_step += 1;
+            if *ctx.global_step % 10 == 0 {
+                let avg_loss = accumulated_loss / ctx.gradient_accumulation_steps as f32;
                 log::info!(
                     "[Train] Epoch: {} | Step: {} | Loss: {:.4}",
-                    epoch,
-                    *global_step,
+                    ctx.epoch,
+                    *ctx.global_step,
                     avg_loss
                 );
             }
@@ -179,13 +182,13 @@ fn train_epoch<B: AutodiffBackend>(
     // Handle remaining gradients
     if accumulation_count > 0 {
         let grads = accumulator.grads();
-        model = optimizer.step(learning_rate, model, grads);
-        *global_step += 1;
+        model = optimizer.step(ctx.learning_rate, model, grads);
+        *ctx.global_step += 1;
         let avg_loss = accumulated_loss / accumulation_count as f32;
         log::info!(
             "[Train] Epoch: {} | Step: {} | Loss: {:.4}",
-            epoch,
-            *global_step,
+            ctx.epoch,
+            *ctx.global_step,
             avg_loss
         );
     }

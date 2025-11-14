@@ -205,7 +205,7 @@ impl Tokenizer for ByteTokenizer {
         let bytes: Vec<u8> = tokens
             .iter()
             .filter_map(|&t| {
-                if t >= 0 && t < 256 {
+                if (0..256).contains(&t) {
                     Some(t as u8)
                 } else {
                     None
