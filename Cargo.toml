@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Burn 0.19 with modern backends
-burn = { version = "0.19", features = ["std", "train", "wgpu", "fusion", "tui"] }
+# Burn 0.19 with modular backend selection
+burn = { version = "0.19", default-features = false, features = ["std", "train"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -21,6 +21,7 @@ env_logger = "0.11"
 # Data handling
 flate2 = "1.0"
 rand = "0.8"
+half = "2"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
@@ -33,3 +34,9 @@ panic = "abort"
 
 [profile.bench]
 inherits = "release"
+
+[features]
+default = ["backend-wgpu"]
+backend-wgpu = ["burn/wgpu", "burn/fusion", "burn/tui"]
+backend-cuda = ["burn/cuda", "burn/fusion"]
+backend-cpu = ["burn/ndarray"]

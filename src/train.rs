@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use burn::{
     data::dataloader::{DataLoader, DataLoaderBuilder},
     grad_clipping::GradientClippingConfig,
@@ -6,9 +6,10 @@ use burn::{
     nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig},
     optim::{AdamWConfig, GradientsAccumulator, GradientsParams, Optimizer},
     prelude::*,
+    record::{CompactRecorder, Recorder},
     tensor::{activation::softmax, backend::AutodiffBackend, ElementConversion, Int, Tensor},
 };
-use std::time::Instant;
+use std::{fs, time::Instant};
 
 use crate::{
     config::TrainingConfig,
@@ -54,7 +55,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     // Loss function
     let loss_fn = CrossEntropyLossConfig::new()
         .with_weights(None)
-        .with_smoothing(Some(0.1)) // Label smoothing
+        .with_smoothing(None)
         .init(&device);
 
     // Training metrics
@@ -88,6 +89,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
                 epoch,
                 &device,
                 steps_limit(config.val_steps),
+                global_step,
             )?;
 
             // Save checkpoint if best model
@@ -112,6 +114,8 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
             best_val_loss
         );
     }
+
+    save_final_checkpoint(&model, &config.output_dir)?;
 
     Ok(())
 }
@@ -217,6 +221,7 @@ fn validate<B: AutodiffBackend>(
     epoch: usize,
     device: &B::Device,
     max_steps: Option<usize>,
+    global_step: usize,
 ) -> Result<f32> {
     let mut total_loss = 0.0f32;
     let mut num_batches = 0;
@@ -243,7 +248,12 @@ fn validate<B: AutodiffBackend>(
     }
 
     let avg_loss = total_loss / num_batches as f32;
-    log::info!("[Valid] Epoch: {} | Loss: {:.4}", epoch, avg_loss);
+    log::info!(
+        "Step {} | Epoch {} | Val loss: {:.4}",
+        global_step,
+        epoch,
+        avg_loss
+    );
 
     Ok(avg_loss)
 }
@@ -370,6 +380,20 @@ fn format_num_params<B: AutodiffBackend, M: AutodiffModule<B>>(model: &M) -> Str
     } else {
         format!("{}", num_params)
     }
+}
+
+fn save_final_checkpoint<B: AutodiffBackend>(
+    model: &LlamaModel<B>,
+    output_dir: &str,
+) -> Result<()> {
+    fs::create_dir_all(output_dir)?;
+    let path = format!("{}/final.bin", output_dir);
+    let record = model.valid().into_record();
+    CompactRecorder::new()
+        .record(record, path.clone().into())
+        .map_err(|err| anyhow!(err.to_string()))?;
+    log::info!("Training complete! Final checkpoint saved to {}", path);
+    Ok(())
 }
 
 fn load_datasets(config: &TrainingConfig) -> Result<(CharDataset, CharDataset)> {

@@ -38,9 +38,20 @@ cargo run --release -- configs/nano.yaml
 
 # Your own experiment
 cargo run --release -- path/to/my_config.yaml
+
+# CUDA backend (enable the feature and select the backend/precision)
+cargo run --release --features backend-cuda -- --backend cuda --precision bf16 configs/nano.yaml
+
+# CPU baseline
+cargo run --release --features backend-cpu -- --backend cpu --precision fp32 configs/test.yaml
 ```
 
 Both sample configs stream the bundled `data/enwik8.gz` file, so you do not need to preprocess anything. Set `train_steps_per_epoch`/`val_steps` in the YAML to keep iterations short while prototyping.
+
+The CLI exposes two runtime toggles:
+
+- `--backend {wgpu|cuda|cpu}` to pick the device the Autodiff backend runs on. Additional backends are gated behind Cargo features (`backend-cuda`, `backend-cpu`).
+- `--precision {fp32|bf16}` to choose the floating-point type. If omitted, the `mixed_precision` flag inside the YAML selects `bf16` when `true` and `fp32` otherwise. CPU falls back to `fp32`.
 
 ## Configuration
 
