@@ -79,6 +79,32 @@ impl Dataset<TextItem> for CharDataset {
     }
 }
 
+impl CharDataset {
+    pub fn sample_batch<B: Backend>(
+        &self,
+        batcher: &TextBatcher,
+        batch_size: usize,
+        device: &B::Device,
+    ) -> TextBatch<B> {
+        let mut items = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            if let Some(item) = self.get(0) {
+                items.push(item);
+            }
+        }
+        batcher.batch(items, device)
+    }
+
+    pub fn sample_prompt(&self, max_len: usize) -> Option<Vec<i64>> {
+        self.get(0).map(|mut item| {
+            if item.input.len() > max_len {
+                item.input.truncate(max_len);
+            }
+            item.input
+        })
+    }
+}
+
 /// Single text sequence item
 #[derive(Clone, Debug)]
 pub struct TextItem {

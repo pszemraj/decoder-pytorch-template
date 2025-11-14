@@ -1,325 +1,312 @@
 use anyhow::{anyhow, Result};
 use burn::{
-    data::dataloader::{DataLoader, DataLoaderBuilder},
     grad_clipping::GradientClippingConfig,
     module::AutodiffModule,
-    nn::loss::{CrossEntropyLoss, CrossEntropyLossConfig},
-    optim::{AdamWConfig, GradientsAccumulator, GradientsParams, Optimizer},
+    optim::{AdamWConfig, GradientsParams, Optimizer},
     prelude::*,
     record::{CompactRecorder, Recorder},
-    tensor::{activation::softmax, backend::AutodiffBackend, ElementConversion, Int, Tensor},
+    tensor::{
+        activation::{log_softmax, softmax},
+        backend::AutodiffBackend,
+        ElementConversion, Int, Tensor,
+    },
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use std::{fs, time::Duration};
+use rand::random;
+use std::fs;
 
 use crate::{
     config::TrainingConfig,
-    data::{CharDataset, TextBatcher, WikiDataset},
+    data::{ByteTokenizer, CharDataset, TextBatcher, Tokenizer, WikiDataset},
     models::LlamaModel,
 };
 
-/// Modern training function using Burn 0.19 APIs
+/// Training loop aligned with `train.py`.
 pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> Result<()> {
-    // Set random seed for reproducibility
     B::seed(&device, config.seed);
 
-    // Initialize model
     let mut model = LlamaModel::<B>::new(config.model.clone(), &device);
-    let total_params = format_param_count(count_params(&model));
-    log::info!("Total parameters: {}", total_params);
+    log::info!(
+        "Total parameters: {}",
+        format_param_count(count_params(&model))
+    );
 
-    // Initialize optimizer
     let mut optimizer = AdamWConfig::new()
         .with_weight_decay(config.weight_decay)
         .with_grad_clipping(Some(GradientClippingConfig::Value(config.gradient_clip)))
         .init();
 
-    // Create datasets
     let (train_dataset, val_dataset) = load_datasets(&config)?;
-
-    // Create data loaders
     let batcher = TextBatcher::new(config.sequence_length);
+    let tokenizer = ByteTokenizer;
 
-    let dataloader_train = DataLoaderBuilder::new(batcher.clone())
-        .batch_size(config.batch_size)
-        .shuffle(config.seed)
-        .num_workers(config.num_workers)
-        .build(train_dataset);
-
-    let dataloader_val = DataLoaderBuilder::new(batcher)
-        .batch_size(config.batch_size)
-        .num_workers(config.num_workers)
-        .build(val_dataset);
-
-    let train_step_limit = steps_limit(config.train_steps_per_epoch);
-    let val_step_limit = steps_limit(config.val_steps);
-    let progress_total = train_step_limit
-        .map(|steps| steps.div_ceil(config.gradient_accumulation_steps))
-        .or_else(|| {
-            estimate_total_steps(
-                dataloader_train.as_ref(),
-                config.batch_size,
-                config.gradient_accumulation_steps,
-            )
-        });
-
-    // Loss function
-    let loss_fn = CrossEntropyLossConfig::new()
-        .with_weights(None)
-        .with_smoothing(None)
-        .init(&device);
-
-    // Training metrics
-    let mut global_step = 0;
+    let total_steps = config.num_batches.max(1);
+    let mut global_step = 0usize;
     let mut best_val_loss = f32::INFINITY;
 
+    let progress = ProgressBar::new(total_steps as u64);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "training: {percent:>3}%|{bar:40.cyan/blue}| {pos}/{len} [{msg}]",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    progress.set_message("loss=----");
+
     // Initial validation
-    validate(
-        &model,
-        dataloader_val.as_ref(),
-        &loss_fn,
+    let val_start = validate(
+        &model.valid(),
+        &val_dataset,
+        &batcher,
+        config.batch_size,
+        config.val_batches,
         &device,
-        val_step_limit,
-        global_step,
     )?;
+    log::info!("Step {} | Val loss: {:.4}", global_step, val_start);
 
-    // Training loop
-    for epoch in 1..=config.num_epochs {
-        // Training phase
-        let epoch_ctx = EpochContext {
-            dataloader: dataloader_train.as_ref(),
-            loss_fn: &loss_fn,
-            learning_rate: config.learning_rate,
-            gradient_accumulation_steps: config.gradient_accumulation_steps,
-            global_step: &mut global_step,
-            device: &device,
-            max_steps: train_step_limit,
-            progress_total,
-            progress_label: "training",
-        };
-        model = train_epoch(model, &mut optimizer, epoch_ctx)?;
+    while global_step < total_steps {
+        let mut loss_tensor: Option<Tensor<B, 1>> = None;
+        let mut loss_sum = 0.0f32;
+        let mut token_sum = 0.0f32;
 
-        // Validation phase
-        if epoch % config.val_frequency == 0 {
-            let val_loss = validate(
-                &model,
-                dataloader_val.as_ref(),
-                &loss_fn,
-                &device,
-                val_step_limit,
-                global_step,
-            )?;
+        for _ in 0..config.gradient_accumulation_steps.max(1) {
+            let batch = train_dataset.sample_batch::<B>(&batcher, config.batch_size, &device);
 
-            // Save checkpoint if best model
-            if val_loss < best_val_loss {
+            let logits = model.forward(batch.tokens.clone(), 0);
+            let [batch_size, seq_len, vocab_size] = logits.dims();
+            let logits_flat = logits.reshape([batch_size * seq_len, vocab_size]);
+            let targets_flat = batch.targets.reshape([batch_size * seq_len]);
+
+            let loss = cross_entropy(logits_flat, targets_flat);
+            let tokens = (batch_size * seq_len) as f32;
+            let loss_sum_tensor = loss.clone() * tokens;
+
+            loss_tensor = Some(match loss_tensor {
+                Some(acc) => acc + loss_sum_tensor.clone(),
+                None => loss_sum_tensor.clone(),
+            });
+
+            loss_sum += loss_sum_tensor.into_scalar().elem::<f32>();
+            token_sum += tokens;
+        }
+
+        let normalized_loss =
+            loss_tensor.ok_or_else(|| anyhow!("No loss accumulated for this step"))? / token_sum;
+        let grads = normalized_loss.backward();
+        let grads = GradientsParams::from_grads(grads, &model);
+        model = optimizer.step(config.learning_rate, model, grads);
+
+        global_step += 1;
+        let avg_loss = loss_sum / token_sum;
+        progress.set_position(global_step as u64);
+        progress.set_message(format!("loss={avg_loss:.4}"));
+
+        if config.validate_every > 0 && global_step % config.validate_every == 0 {
+            let val_model = model.valid();
+            let val_loss = progress.suspend(|| {
+                validate(
+                    &val_model,
+                    &val_dataset,
+                    &batcher,
+                    config.batch_size,
+                    config.val_batches,
+                    &device,
+                )
+            })?;
+            log::info!("Step {} | Val loss: {:.4}", global_step, val_loss);
+            if val_loss.is_finite() && val_loss < best_val_loss {
                 best_val_loss = val_loss;
-                save_checkpoint(&model, epoch, val_loss, &config.output_dir)?;
+                save_checkpoint(&model, global_step, val_loss, &config.output_dir)?;
                 log::info!("New best model saved with validation loss: {:.4}", val_loss);
             }
         }
 
-        // Generate samples
-        if epoch % config.sample_frequency == 0 {
-            generate_samples(&model.valid(), &device)?;
+        if config.generate_every > 0 && global_step % config.generate_every == 0 {
+            let gen_model = model.valid();
+            progress.suspend(|| {
+                generate_preview(
+                    &gen_model,
+                    &val_dataset,
+                    &tokenizer,
+                    config.generation_prompt_length,
+                    config.generation_length,
+                    config.temperature,
+                    config.min_p,
+                    global_step,
+                    &device,
+                )
+            })?;
+        }
+
+        if config.save_every > 0 && global_step % config.save_every == 0 {
+            save_checkpoint(&model, global_step, best_val_loss, &config.output_dir)?;
         }
     }
 
+    progress.finish_with_message("done");
     save_final_checkpoint(&model, &config.output_dir)?;
 
     Ok(())
 }
 
-struct EpochContext<'a, B: AutodiffBackend> {
-    dataloader: &'a dyn DataLoader<B, TextBatch<B>>,
-    loss_fn: &'a CrossEntropyLoss<B>,
-    learning_rate: f64,
-    gradient_accumulation_steps: usize,
-    global_step: &'a mut usize,
-    device: &'a B::Device,
-    max_steps: Option<usize>,
-    progress_total: Option<usize>,
-    progress_label: &'a str,
-}
-
-/// Train for one epoch with gradient accumulation
-fn train_epoch<'a, B: AutodiffBackend>(
-    mut model: LlamaModel<B>,
-    optimizer: &mut impl Optimizer<LlamaModel<B>, B>,
-    ctx: EpochContext<'a, B>,
-) -> Result<LlamaModel<B>> {
-    assert!(
-        ctx.gradient_accumulation_steps > 0,
-        "gradient_accumulation_steps must be > 0"
-    );
-    let mut accumulated_loss = 0.0f32;
-    let mut accumulation_count = 0usize;
-    let mut accumulator = GradientsAccumulator::<LlamaModel<B>>::new();
-    let mut loss_sum = 0.0f32;
-    let mut token_sum = 0.0f32;
-    let progress = create_progress_bar(ctx.progress_label, ctx.progress_total);
-    progress.set_message("loss=----");
-    let use_spinner = ctx.progress_total.is_none();
-    let mut displayed_loss = 0.0f32;
-
-    for (step, batch) in ctx.dataloader.iter().enumerate() {
-        if let Some(limit) = ctx.max_steps {
-            if step >= limit {
-                break;
-            }
-        }
-        // Move batch to device
-        let batch = batch.to_device(ctx.device);
-
-        // Forward pass
-        let logits = model.forward(batch.tokens.clone(), 0);
-
-        // Reshape for loss calculation
-        let [batch_size, seq_len, vocab_size] = logits.dims();
-        let logits_flat = logits.reshape([batch_size * seq_len, vocab_size]);
-        let targets_flat = batch.targets.reshape([batch_size * seq_len]);
-
-        // Calculate loss
-        let loss = ctx.loss_fn.forward(logits_flat, targets_flat);
-        let loss_value = loss.clone().into_scalar().elem::<f32>();
-        accumulated_loss += loss_value;
-        accumulation_count += 1;
-        let tokens = (batch_size * seq_len) as f32;
-        loss_sum += loss_value * tokens;
-        token_sum += tokens;
-
-        // Scale loss for gradient accumulation
-        let scaled_loss = loss / ctx.gradient_accumulation_steps as f32;
-
-        // Backward pass
-        let grads = GradientsParams::from_grads(scaled_loss.backward(), &model);
-        accumulator.accumulate(&model, grads);
-
-        // Optimizer step after accumulation
-        if accumulation_count == ctx.gradient_accumulation_steps {
-            let grads = accumulator.grads();
-            model = optimizer.step(ctx.learning_rate, model, grads);
-
-            *ctx.global_step += 1;
-            let avg_loss = if token_sum > 0.0 {
-                loss_sum / token_sum
-            } else {
-                loss_sum
-            };
-            displayed_loss = avg_loss;
-            if ctx.progress_total.is_some() {
-                progress.inc(1);
-            } else {
-                progress.tick();
-            }
-            progress.set_message(format!("loss={avg_loss:.4}"));
-            accumulated_loss = 0.0;
-            accumulation_count = 0;
-            loss_sum = 0.0;
-            token_sum = 0.0;
-        } else if use_spinner {
-            progress.tick();
-        }
-    }
-
-    // Handle remaining gradients
-    if accumulation_count > 0 {
-        let grads = accumulator.grads();
-        model = optimizer.step(ctx.learning_rate, model, grads);
-        *ctx.global_step += 1;
-        let avg_loss = accumulated_loss / accumulation_count as f32;
-        if ctx.progress_total.is_some() {
-            progress.inc(1);
-        } else {
-            progress.tick();
-        }
-        progress.set_message(format!("loss={avg_loss:.4}"));
-        displayed_loss = avg_loss;
-    }
-
-    if ctx.progress_total.is_some() {
-        progress.finish_with_message(format!("loss={displayed_loss:.4}"));
-    } else {
-        progress.finish_and_clear();
-    }
-
-    Ok(model)
-}
-
-/// Validation loop
 fn validate<B: Backend>(
     model: &LlamaModel<B>,
-    dataloader: &dyn DataLoader<B, TextBatch<B>>,
-    loss_fn: &CrossEntropyLoss<B>,
+    dataset: &CharDataset,
+    batcher: &TextBatcher,
+    batch_size: usize,
+    num_batches: usize,
     device: &B::Device,
-    max_steps: Option<usize>,
-    global_step: usize,
 ) -> Result<f32> {
-    let mut total_loss = 0.0f32;
-    let mut num_batches = 0;
-
-    for (step, batch) in dataloader.iter().enumerate() {
-        if let Some(limit) = max_steps {
-            if step >= limit {
-                break;
-            }
-        }
-        let batch = batch.to_device(device);
-
-        // Forward pass (no gradients needed)
-        let logits = model.forward(batch.tokens.clone(), 0);
-
-        // Calculate loss
-        let [batch_size, seq_len, vocab_size] = logits.dims();
-        let logits_flat = logits.reshape([batch_size * seq_len, vocab_size]);
-        let targets_flat = batch.targets.reshape([batch_size * seq_len]);
-
-        let loss = loss_fn.forward(logits_flat, targets_flat);
-        total_loss += loss.into_scalar().elem::<f32>();
-        num_batches += 1;
-    }
-
     if num_batches == 0 {
-        log::warn!("Validation dataloader produced no batches. Skipping metric.");
         return Ok(f32::NAN);
     }
 
-    let avg_loss = total_loss / num_batches as f32;
-    log::info!("Step {} | Val loss: {:.4}", global_step, avg_loss);
+    let mut total_loss = 0.0f32;
+    let mut token_sum = 0.0f32;
 
-    Ok(avg_loss)
-}
+    for _ in 0..num_batches {
+        let batch = dataset.sample_batch::<B>(batcher, batch_size, device);
+        let logits = model.forward(batch.tokens.clone(), 0);
+        let [batch_size, seq_len, vocab_size] = logits.dims();
+        let logits_flat = logits.reshape([batch_size * seq_len, vocab_size]);
+        let targets_flat = batch.targets.reshape([batch_size * seq_len]);
 
-/// Generate text samples
-fn generate_samples<B: Backend>(model: &LlamaModel<B>, device: &B::Device) -> Result<()> {
-    let prompts = vec![
-        "The quick brown fox",
-        "Once upon a time",
-        "In the beginning",
-    ];
-
-    for prompt in prompts {
-        let tokens = tokenize(prompt);
-        if tokens.is_empty() {
-            continue;
-        }
-
-        let generated = generate_text(model, tokens, 50, 1.0, device)?;
-        let text = detokenize(&generated);
-
-        log::info!("Generated from '{}': {}", prompt, text);
+        let loss = cross_entropy(logits_flat, targets_flat);
+        let tokens = (batch_size * seq_len) as f32;
+        total_loss += loss.into_scalar().elem::<f32>() * tokens;
+        token_sum += tokens;
     }
 
+    if token_sum == 0.0 {
+        Ok(f32::NAN)
+    } else {
+        Ok(total_loss / token_sum)
+    }
+}
+
+fn generate_preview<B: Backend>(
+    model: &LlamaModel<B>,
+    dataset: &CharDataset,
+    tokenizer: &ByteTokenizer,
+    prompt_len: usize,
+    gen_len: usize,
+    temperature: f32,
+    min_p: f32,
+    step: usize,
+    device: &B::Device,
+) -> Result<()> {
+    if let Some(prompt_tokens) = dataset.sample_prompt(prompt_len) {
+        let prompt_text = tokenizer.decode(&prompt_tokens);
+        let generated = generate_text(model, &prompt_tokens, gen_len, temperature, min_p, device)?;
+        let completion = if generated.len() > prompt_tokens.len() {
+            &generated[prompt_tokens.len()..]
+        } else {
+            &[]
+        };
+        let completion_text = tokenizer.decode(completion);
+
+        log::info!(
+            "\n================================================== Step {} ==================================================",
+            step
+        );
+        log::info!("Prompt: {}", prompt_text);
+        log::info!("Generated: {}", completion_text);
+    }
     Ok(())
 }
 
-/// Simple character tokenization
-fn tokenize(text: &str) -> Vec<i64> {
-    text.bytes().map(|b| b as i64).collect()
+fn generate_text<B: Backend>(
+    model: &LlamaModel<B>,
+    prompt: &[i64],
+    max_length: usize,
+    temperature: f32,
+    min_p: f32,
+    device: &B::Device,
+) -> Result<Vec<i64>> {
+    if prompt.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut tokens = prompt.to_vec();
+    let max_context = model.max_position_embeddings();
+
+    for _ in 0..max_length {
+        let start = tokens.len().saturating_sub(max_context);
+        let context = &tokens[start..];
+        if context.is_empty() {
+            break;
+        }
+
+        let input = tokens_to_tensor::<B>(context, device).unsqueeze();
+        let logits = model.forward(input, start);
+        let [_, _, vocab_size] = logits.dims();
+        let last_index = context.len() - 1;
+        let last_logits = logits
+            .slice([0..1, last_index..last_index + 1, 0..vocab_size])
+            .squeeze_dims(&[0, 1]);
+
+        let next_token = sample_next_token(last_logits, temperature, min_p)?;
+        tokens.push(next_token);
+    }
+
+    Ok(tokens)
 }
 
-/// Simple character detokenization  
-fn detokenize(tokens: &[i64]) -> String {
-    tokens.iter().map(|&t| (t as u8) as char).collect()
+fn sample_next_token<B: Backend>(
+    logits: Tensor<B, 1>,
+    temperature: f32,
+    min_p: f32,
+) -> Result<i64> {
+    let temp = if temperature <= 0.0 {
+        1e-5
+    } else {
+        temperature
+    };
+    let scaled = logits / temp;
+    let probs = softmax(scaled, 0);
+    let data = probs.to_data();
+    let values: Vec<f32> = data.iter::<f32>().collect();
+    let mut ranked: Vec<(usize, f32)> = values.into_iter().enumerate().collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let threshold = if min_p <= 0.0 || min_p >= 1.0 {
+        1.0
+    } else {
+        min_p
+    };
+    let mut filtered = Vec::new();
+    let mut cumulative = 0.0;
+    for (idx, prob) in ranked {
+        cumulative += prob;
+        filtered.push((idx, prob));
+        if cumulative >= threshold {
+            break;
+        }
+    }
+
+    let sum: f32 = filtered.iter().map(|(_, p)| *p).sum();
+    if sum == 0.0 {
+        return Ok(0);
+    }
+
+    let mut draw = random::<f32>() * sum;
+    for (idx, prob) in filtered {
+        draw -= prob;
+        if draw <= 0.0 {
+            return Ok(idx as i64);
+        }
+    }
+    Ok(0)
+}
+
+fn cross_entropy<B: Backend>(logits: Tensor<B, 2>, targets: Tensor<B, 1, Int>) -> Tensor<B, 1> {
+    let log_probs = log_softmax(logits, 1);
+    let [batch, _] = log_probs.dims();
+    let gathered = log_probs
+        .gather(1, targets.reshape([batch, 1]))
+        .reshape([batch]);
+    gathered.mean().neg()
 }
 
 fn tokens_to_tensor<B: Backend>(tokens: &[i64], device: &B::Device) -> Tensor<B, 2, Int> {
@@ -328,80 +315,21 @@ fn tokens_to_tensor<B: Backend>(tokens: &[i64], device: &B::Device) -> Tensor<B,
     Tensor::<B, 2, Int>::from_data(data, device)
 }
 
-/// Generate text using the model
-fn generate_text<B: Backend>(
-    model: &LlamaModel<B>,
-    prompt_tokens: Vec<i64>,
-    max_length: usize,
-    temperature: f32,
-    device: &B::Device,
-) -> Result<Vec<i64>> {
-    if prompt_tokens.is_empty() {
-        return Ok(prompt_tokens);
-    }
-
-    let mut tokens = prompt_tokens;
-    let max_context = model.max_position_embeddings();
-    let temp = temperature.max(1e-5);
-
-    for _ in 0..max_length {
-        let start = tokens.len().saturating_sub(max_context);
-        let context = tokens[start..].to_vec();
-        if context.is_empty() {
-            break;
-        }
-
-        let position_offset = start;
-        let input = tokens_to_tensor::<B>(&context, device);
-        let logits = model.forward(input, position_offset);
-
-        let last_index = context.len() - 1;
-        let vocab = logits.dims()[2];
-        let last_logits = logits
-            .slice([0..1, last_index..last_index + 1, 0..vocab])
-            .squeeze_dims(&[0, 1]);
-
-        let probs = softmax(last_logits / temp, 0);
-        let next_token = sample_from_probs(probs)?;
-        tokens.push(next_token);
-    }
-
-    Ok(tokens)
-}
-
-/// Sample from probability distribution
-fn sample_from_probs<B: Backend>(probs: Tensor<B, 1>) -> Result<i64> {
-    let values: Vec<f32> = probs.into_data().iter::<f32>().collect();
-    let mut cumsum = 0.0;
-    let random = rand::random::<f32>();
-
-    for (idx, prob) in values.iter().enumerate() {
-        cumsum += prob;
-        if cumsum > random {
-            return Ok(idx as i64);
-        }
-    }
-
-    Ok((values.len().saturating_sub(1)) as i64)
-}
-
-/// Save model checkpoint
 fn save_checkpoint<B: AutodiffBackend>(
     model: &LlamaModel<B>,
-    epoch: usize,
+    step: usize,
     val_loss: f32,
     output_dir: &str,
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     let checkpoint_name = format!(
-        "{}/checkpoint_epoch_{}_loss_{:.4}.bin",
-        output_dir, epoch, val_loss
+        "{}/checkpoint_step_{}_loss_{:.4}.bin",
+        output_dir, step, val_loss
     );
     log::info!("Saving checkpoint: {}", checkpoint_name);
     CompactRecorder::new()
         .record(model.valid().into_record(), checkpoint_name.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;
-
     Ok(())
 }
 
@@ -434,36 +362,19 @@ fn load_datasets(config: &TrainingConfig) -> Result<(CharDataset, CharDataset)> 
     }
 }
 
-fn steps_limit(value: usize) -> Option<usize> {
-    if value == 0 {
-        None
-    } else {
-        Some(value)
-    }
-}
-
-fn estimate_total_steps<B: Backend>(
-    dataloader: &dyn DataLoader<B, TextBatch<B>>,
-    batch_size: usize,
-    grad_accum: usize,
-) -> Option<usize> {
-    if batch_size == 0 || grad_accum == 0 {
-        return None;
-    }
-    let items = dataloader.num_items();
-    if items == 0 {
-        None
-    } else {
-        let batches = items.div_ceil(batch_size);
-        Some(batches.div_ceil(grad_accum))
-    }
-}
-
-/// Batch structure for text data
 #[derive(Clone, Debug)]
 pub struct TextBatch<B: Backend> {
     pub tokens: Tensor<B, 2, Int>,
     pub targets: Tensor<B, 2, Int>,
+}
+
+impl<B: Backend> TextBatch<B> {
+    pub fn to_device(self, device: &B::Device) -> Self {
+        Self {
+            tokens: self.tokens.to_device(device),
+            targets: self.targets.to_device(device),
+        }
+    }
 }
 
 fn count_params<B: AutodiffBackend, M: AutodiffModule<B>>(model: &M) -> usize {
@@ -477,40 +388,5 @@ fn format_param_count(count: usize) -> String {
         format!("{:.2}K", count as f32 / 1_000.0)
     } else {
         format!("{}", count)
-    }
-}
-
-fn create_progress_bar(label: &str, total: Option<usize>) -> ProgressBar {
-    match total {
-        Some(len) if len > 0 => {
-            let pb = ProgressBar::new(len as u64);
-            pb.set_style(
-                ProgressStyle::with_template("{prefix}: {wide_bar} {pos}/{len} [{msg}]")
-                    .unwrap()
-                    .progress_chars("=>-"),
-            );
-            pb.set_prefix(label.to_string());
-            pb
-        }
-        _ => {
-            let pb = ProgressBar::new_spinner();
-            pb.set_style(
-                ProgressStyle::with_template("{prefix}: {spinner} {msg}")
-                    .unwrap()
-                    .tick_chars("/-\\| "),
-            );
-            pb.set_prefix(label.to_string());
-            pb.enable_steady_tick(Duration::from_millis(100));
-            pb
-        }
-    }
-}
-
-impl<B: Backend> TextBatch<B> {
-    pub fn to_device(self, device: &B::Device) -> Self {
-        Self {
-            tokens: self.tokens.to_device(device),
-            targets: self.targets.to_device(device),
-        }
     }
 }

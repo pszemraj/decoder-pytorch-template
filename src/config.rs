@@ -100,9 +100,9 @@ pub struct TrainingConfig {
     #[config(default = 512)]
     pub sequence_length: usize,
 
-    /// Number of training epochs
-    #[config(default = 10)]
-    pub num_epochs: usize,
+    /// Number of optimizer steps
+    #[config(default = 100000)]
+    pub num_batches: usize,
 
     /// Learning rate
     #[config(default = 3e-4)]
@@ -120,25 +120,29 @@ pub struct TrainingConfig {
     #[config(default = 1)]
     pub gradient_accumulation_steps: usize,
 
-    /// Validation frequency (epochs)
-    #[config(default = 1)]
-    pub val_frequency: usize,
+    /// Validate every N steps
+    #[config(default = 100)]
+    pub validate_every: usize,
 
-    /// Sample generation frequency (epochs)
-    #[config(default = 1)]
-    pub sample_frequency: usize,
+    /// Number of validation batches per evaluation
+    #[config(default = 50)]
+    pub val_batches: usize,
 
-    /// Number of dataloader workers
-    #[config(default = 4)]
-    pub num_workers: usize,
+    /// Generation frequency (steps)
+    #[config(default = 500)]
+    pub generate_every: usize,
 
-    /// Training steps per epoch (0 = iterate whole dataset)
-    #[config(default = 0)]
-    pub train_steps_per_epoch: usize,
+    /// Checkpoint frequency (steps)
+    #[config(default = 5000)]
+    pub save_every: usize,
 
-    /// Validation steps per run (0 = iterate whole dataset)
-    #[config(default = 0)]
-    pub val_steps: usize,
+    /// Length of each generated sample
+    #[config(default = 256)]
+    pub generation_length: usize,
+
+    /// Number of prompt tokens to display before generation
+    #[config(default = 128)]
+    pub generation_prompt_length: usize,
 
     /// Random seed
     #[config(default = 42)]
@@ -151,10 +155,13 @@ pub struct TrainingConfig {
     /// Enable mixed precision training
     #[config(default = true)]
     pub mixed_precision: bool,
+    /// Temperature for sampling
+    #[config(default = 1.0)]
+    pub temperature: f32,
 
-    /// Warmup steps for learning rate
-    #[config(default = 500)]
-    pub warmup_steps: usize,
+    /// Min-p filtering threshold
+    #[config(default = 0.1)]
+    pub min_p: f32,
 
     /// Use gradient checkpointing to save memory
     #[config(default = false)]
@@ -167,7 +174,7 @@ impl TrainingConfig {
         Self::new(ModelConfig::test())
             .with_batch_size(2)
             .with_sequence_length(128)
-            .with_num_epochs(2)
+            .with_num_batches(1000)
             .with_learning_rate(1e-3)
     }
 
@@ -176,7 +183,7 @@ impl TrainingConfig {
         Self::new(ModelConfig::nano())
             .with_batch_size(4)
             .with_sequence_length(512)
-            .with_num_epochs(10)
+            .with_num_batches(10000)
             .with_learning_rate(3e-4)
             .with_gradient_accumulation_steps(4)
     }
@@ -186,7 +193,7 @@ impl TrainingConfig {
         Self::new(ModelConfig::small())
             .with_batch_size(8)
             .with_sequence_length(1024)
-            .with_num_epochs(20)
+            .with_num_batches(20000)
             .with_learning_rate(2e-4)
             .with_gradient_accumulation_steps(2)
             .with_gradient_checkpointing(true)

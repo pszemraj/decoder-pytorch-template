@@ -14,18 +14,20 @@ val_data: data/enwik8.gz
 
 batch_size: 1
 sequence_length: 512
-num_epochs: 5
+num_batches: 10000
 learning_rate: 0.0003
 weight_decay: 0.0003
 gradient_clip: 1.0
 gradient_accumulation_steps: 16
-val_frequency: 1
-sample_frequency: 5
-num_workers: 0
-train_steps_per_epoch: 200
-val_steps: 50
+validate_every: 250
+val_batches: 20
+generate_every: 250
+save_every: 2000
+generation_length: 256
+generation_prompt_length: 128
+temperature: 1.0
+min_p: 0.1
 seed: 7
 output_dir: runs/nano
 mixed_precision: true
-warmup_steps: 500
 gradient_checkpointing: false
