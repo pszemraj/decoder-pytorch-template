@@ -55,6 +55,7 @@ model:
   intermediate_size: 3072
   rope_theta: 10000.0
   max_position_embeddings: 2048
+  tie_embeddings: true
 
 train_data: data/enwik8.gz   # gz is detected automatically
 val_data: data/enwik8.gz

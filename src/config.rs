@@ -34,6 +34,10 @@ pub struct ModelConfig {
     /// Dropout probability
     #[config(default = 0.1)]
     pub dropout: f64,
+
+    /// Tie token embedding weights to the LM head
+    #[config(default = true)]
+    pub tie_embeddings: bool,
 }
 
 impl ModelConfig {

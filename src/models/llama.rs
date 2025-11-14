@@ -5,7 +5,7 @@
 //! export it through `models/mod.rs` so the trainer can pick it up.
 
 use burn::{
-    module::Module,
+    module::{Initializer, Module},
     nn::{
         attention::generate_autoregressive_mask, Embedding, EmbeddingConfig, Linear, LinearConfig,
         RmsNorm, RmsNormConfig, RotaryEncoding, RotaryEncodingConfig, SwiGlu, SwiGluConfig,
@@ -190,24 +190,39 @@ pub struct LlamaModel<B: Backend> {
     embed_tokens: Embedding<B>,
     layers: Vec<TransformerBlock<B>>,
     norm: RmsNorm<B>,
-    lm_head: Linear<B>,
+    lm_head: Option<Linear<B>>,
 
     #[module(constant)]
     max_position_embeddings: usize,
+    #[module(constant)]
+    tie_embeddings: bool,
 }
 
 impl<B: Backend> LlamaModel<B> {
     pub fn new(config: ModelConfig, device: &B::Device) -> Self {
-        let embed_tokens = EmbeddingConfig::new(config.vocab_size, config.hidden_size).init(device);
+        let weight_init = Initializer::Normal {
+            mean: 0.0,
+            std: 0.02,
+        };
+        let embed_tokens = EmbeddingConfig::new(config.vocab_size, config.hidden_size)
+            .with_initializer(weight_init.clone())
+            .init(device);
         let layers = (0..config.n_layers)
             .map(|_| TransformerBlock::new(&config, device))
             .collect();
         let norm = RmsNormConfig::new(config.hidden_size)
             .with_epsilon(1e-6)
             .init(device);
-        let lm_head = LinearConfig::new(config.hidden_size, config.vocab_size)
-            .with_bias(false)
-            .init(device);
+        let lm_head = if config.tie_embeddings {
+            None
+        } else {
+            Some(
+                LinearConfig::new(config.hidden_size, config.vocab_size)
+                    .with_bias(false)
+                    .with_initializer(weight_init)
+                    .init(device),
+            )
+        };
 
         Self {
             embed_tokens,
@@ -215,6 +230,7 @@ impl<B: Backend> LlamaModel<B> {
             norm,
             lm_head,
             max_position_embeddings: config.max_position_embeddings,
+            tie_embeddings: config.tie_embeddings,
         }
     }
 
@@ -238,11 +254,32 @@ impl<B: Backend> LlamaModel<B> {
         }
 
         hidden_states = self.norm.forward(hidden_states);
-        self.lm_head.forward(hidden_states)
+        self.project(hidden_states)
     }
 
     pub fn max_position_embeddings(&self) -> usize {
         self.max_position_embeddings
+    }
+
+    fn project(&self, hidden_states: Tensor<B, 3>) -> Tensor<B, 3> {
+        if self.tie_embeddings {
+            self.project_with_embeddings(hidden_states)
+        } else {
+            self.lm_head
+                .as_ref()
+                .expect("linear head should exist when embeddings aren't tied")
+                .forward(hidden_states)
+        }
+    }
+
+    fn project_with_embeddings(&self, hidden_states: Tensor<B, 3>) -> Tensor<B, 3> {
+        let [batch_size, seq_len, hidden] = hidden_states.dims();
+        let [vocab_size, _] = self.embed_tokens.weight.shape().dims();
+        let flattened = hidden_states.reshape([batch_size * seq_len, hidden]);
+        let weight = self.embed_tokens.weight.val().swap_dims(0, 1);
+        flattened
+            .matmul(weight)
+            .reshape([batch_size, seq_len, vocab_size])
     }
 }
 
