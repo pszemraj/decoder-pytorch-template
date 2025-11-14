@@ -5,7 +5,10 @@ edition = "2021"
 
 [dependencies]
 # Burn 0.19 with modular backend selection
-burn = { version = "0.19", default-features = false, features = ["std", "train"] }
+burn = { version = "0.19", default-features = false, features = [
+    "std",
+    "train",
+] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
