@@ -9,10 +9,14 @@ use burn::{
     record::{CompactRecorder, Recorder},
     tensor::{activation::softmax, backend::AutodiffBackend, ElementConversion, Int, Tensor},
 };
-use std::{fs, time::Instant};
+use indicatif::{ProgressBar, ProgressStyle};
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
 use crate::{
-    config::TrainingConfig,
+    config::{ModelConfig, TrainingConfig},
     data::{CharDataset, TextBatcher, WikiDataset},
     models::LlamaModel,
 };
@@ -24,9 +28,11 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
 
     // Initialize model
     let mut model = LlamaModel::<B>::new(config.model.clone(), &device);
+    let total_params = count_params(&model);
+    log_model_summary(&config.model, total_params);
     log::info!(
         "Initialized model with {} parameters",
-        format_num_params(&model)
+        format_param_count(total_params)
     );
 
     // Initialize optimizer
@@ -52,6 +58,11 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         .num_workers(config.num_workers)
         .build(val_dataset);
 
+    let train_step_limit = steps_limit(config.train_steps_per_epoch);
+    let val_step_limit = steps_limit(config.val_steps);
+    let progress_total = train_step_limit
+        .or_else(|| estimate_total_steps(dataloader_train.as_ref(), config.batch_size));
+
     // Loss function
     let loss_fn = CrossEntropyLossConfig::new()
         .with_weights(None)
@@ -62,6 +73,17 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     let mut global_step = 0;
     let mut best_val_loss = f32::INFINITY;
     let start_time = Instant::now();
+
+    // Initial validation
+    validate(
+        &model,
+        dataloader_val.as_ref(),
+        &loss_fn,
+        0,
+        &device,
+        val_step_limit,
+        global_step,
+    )?;
 
     // Training loop
     for epoch in 1..=config.num_epochs {
@@ -76,7 +98,8 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
             global_step: &mut global_step,
             epoch,
             device: &device,
-            max_steps: steps_limit(config.train_steps_per_epoch),
+            max_steps: train_step_limit,
+            progress_total,
         };
         model = train_epoch(model, &mut optimizer, epoch_ctx)?;
 
@@ -88,14 +111,14 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
                 &loss_fn,
                 epoch,
                 &device,
-                steps_limit(config.val_steps),
+                val_step_limit,
                 global_step,
             )?;
 
             // Save checkpoint if best model
             if val_loss < best_val_loss {
                 best_val_loss = val_loss;
-                save_checkpoint(&model, epoch, val_loss)?;
+                save_checkpoint(&model, epoch, val_loss, &config.output_dir)?;
                 log::info!("New best model saved with validation loss: {:.4}", val_loss);
             }
         }
@@ -129,6 +152,7 @@ struct EpochContext<'a, B: AutodiffBackend> {
     epoch: usize,
     device: &'a B::Device,
     max_steps: Option<usize>,
+    progress_total: Option<usize>,
 }
 
 /// Train for one epoch with gradient accumulation
@@ -144,6 +168,10 @@ fn train_epoch<'a, B: AutodiffBackend>(
     let mut accumulated_loss = 0.0f32;
     let mut accumulation_count = 0usize;
     let mut accumulator = GradientsAccumulator::<LlamaModel<B>>::new();
+    let mut loss_sum = 0.0f32;
+    let mut token_sum = 0.0f32;
+    let progress = create_progress_bar(ctx.epoch, ctx.progress_total);
+    let use_spinner = ctx.progress_total.is_none();
 
     for (step, batch) in ctx.dataloader.iter().enumerate() {
         if let Some(limit) = ctx.max_steps {
@@ -167,6 +195,9 @@ fn train_epoch<'a, B: AutodiffBackend>(
         let loss_value = loss.clone().into_scalar().elem::<f32>();
         accumulated_loss += loss_value;
         accumulation_count += 1;
+        let tokens = (batch_size * seq_len) as f32;
+        loss_sum += loss_value * tokens;
+        token_sum += tokens;
 
         // Scale loss for gradient accumulation
         let scaled_loss = loss / ctx.gradient_accumulation_steps as f32;
@@ -193,6 +224,21 @@ fn train_epoch<'a, B: AutodiffBackend>(
 
             accumulated_loss = 0.0;
             accumulation_count = 0;
+            let avg_loss = if token_sum > 0.0 {
+                loss_sum / token_sum
+            } else {
+                0.0
+            };
+            if ctx.progress_total.is_some() {
+                progress.inc(1);
+            } else {
+                progress.tick();
+            }
+            progress.set_message(format!("loss={avg_loss:.4}"));
+            loss_sum = 0.0;
+            token_sum = 0.0;
+        } else if use_spinner {
+            progress.tick();
         }
     }
 
@@ -208,13 +254,25 @@ fn train_epoch<'a, B: AutodiffBackend>(
             *ctx.global_step,
             avg_loss
         );
+        if ctx.progress_total.is_some() {
+            progress.inc(1);
+        } else {
+            progress.tick();
+        }
+        progress.set_message(format!("loss={avg_loss:.4}"));
+    }
+
+    if ctx.progress_total.is_some() {
+        progress.finish();
+    } else {
+        progress.finish_and_clear();
     }
 
     Ok(model)
 }
 
 /// Validation loop
-fn validate<B: AutodiffBackend>(
+fn validate<B: Backend>(
     model: &LlamaModel<B>,
     dataloader: &dyn DataLoader<B, TextBatch<B>>,
     loss_fn: &CrossEntropyLoss<B>,
@@ -245,6 +303,14 @@ fn validate<B: AutodiffBackend>(
         let loss = loss_fn.forward(logits_flat, targets_flat);
         total_loss += loss.into_scalar().elem::<f32>();
         num_batches += 1;
+    }
+
+    if num_batches == 0 {
+        log::warn!(
+            "Validation dataloader produced no batches at epoch {}. Skipping metric.",
+            epoch
+        );
+        return Ok(f32::NAN);
     }
 
     let avg_loss = total_loss / num_batches as f32;
@@ -356,30 +422,22 @@ fn sample_from_probs<B: Backend>(probs: Tensor<B, 1>) -> Result<i64> {
 
 /// Save model checkpoint
 fn save_checkpoint<B: AutodiffBackend>(
-    _model: &LlamaModel<B>,
+    model: &LlamaModel<B>,
     epoch: usize,
     val_loss: f32,
+    output_dir: &str,
 ) -> Result<()> {
-    let checkpoint_name = format!("checkpoint_epoch_{}_loss_{:.4}.bin", epoch, val_loss);
+    fs::create_dir_all(output_dir)?;
+    let checkpoint_name = format!(
+        "{}/checkpoint_epoch_{}_loss_{:.4}.bin",
+        output_dir, epoch, val_loss
+    );
     log::info!("Saving checkpoint: {}", checkpoint_name);
-
-    // In real implementation, use burn::record::Recorder
-    // model.save_file(checkpoint_name, &CompactRecorder::new())?;
+    CompactRecorder::new()
+        .record(model.valid().into_record(), checkpoint_name.clone().into())
+        .map_err(|err| anyhow!(err.to_string()))?;
 
     Ok(())
-}
-
-/// Format number of parameters
-fn format_num_params<B: AutodiffBackend, M: AutodiffModule<B>>(model: &M) -> String {
-    let num_params = model.num_params();
-
-    if num_params > 1_000_000 {
-        format!("{:.2}M", num_params as f32 / 1_000_000.0)
-    } else if num_params > 1_000 {
-        format!("{:.2}K", num_params as f32 / 1_000.0)
-    } else {
-        format!("{}", num_params)
-    }
 }
 
 fn save_final_checkpoint<B: AutodiffBackend>(
@@ -419,11 +477,113 @@ fn steps_limit(value: usize) -> Option<usize> {
     }
 }
 
+fn estimate_total_steps<B: Backend>(
+    dataloader: &dyn DataLoader<B, TextBatch<B>>,
+    batch_size: usize,
+) -> Option<usize> {
+    if batch_size == 0 {
+        return None;
+    }
+    let items = dataloader.num_items();
+    if items == 0 {
+        None
+    } else {
+        Some(items.div_ceil(batch_size))
+    }
+}
+
 /// Batch structure for text data
 #[derive(Clone, Debug)]
 pub struct TextBatch<B: Backend> {
     pub tokens: Tensor<B, 2, Int>,
     pub targets: Tensor<B, 2, Int>,
+}
+
+fn count_params<B: AutodiffBackend, M: AutodiffModule<B>>(model: &M) -> usize {
+    model.num_params()
+}
+
+fn format_param_count(count: usize) -> String {
+    if count > 1_000_000 {
+        format!("{:.2}M", count as f32 / 1_000_000.0)
+    } else if count > 1_000 {
+        format!("{:.2}K", count as f32 / 1_000.0)
+    } else {
+        format!("{}", count)
+    }
+}
+
+fn log_model_summary(config: &ModelConfig, total_params: usize) {
+    let embed_params = config.vocab_size * config.hidden_size;
+    let attn_params = 4 * config.hidden_size * config.hidden_size;
+    let ffn_params = 3 * config.hidden_size * config.intermediate_size;
+    let norm_params = 2 * config.hidden_size;
+    let block_params = attn_params + ffn_params + norm_params;
+    let head_params = if config.tie_embeddings {
+        0
+    } else {
+        config.hidden_size * config.vocab_size
+    };
+
+    log::info!("======================================================");
+    log::info!("Layer (type)          Param Shape  Param #    Grad State");
+    log::info!(
+        "  Embedding             {:>5}x{:<5} {:>10}   trainable",
+        config.vocab_size,
+        config.hidden_size,
+        embed_params
+    );
+    log::info!(
+        "  TransformerBlock x{:>2}        {:>10}   mixed",
+        config.n_layers,
+        block_params
+    );
+    log::info!(
+        "  RMSNorm (final)                  {:>10}   trainable",
+        config.hidden_size
+    );
+    if !config.tie_embeddings {
+        log::info!(
+            "  LM Head               {:>5}x{:<5} {:>10}   trainable",
+            config.hidden_size,
+            config.vocab_size,
+            head_params
+        );
+    } else {
+        log::info!("  LM Head (tied)                    uses embedding weights");
+    }
+    log::info!("======================================================");
+    log::info!("Total params: {}", format_param_count(total_params));
+    log::info!("Trainable params: {}", format_param_count(total_params));
+    log::info!("Non-trainable params: 0");
+    log::info!("======================================================");
+}
+
+fn create_progress_bar(epoch: usize, total: Option<usize>) -> ProgressBar {
+    let prefix = format!("Epoch {}", epoch);
+    match total {
+        Some(len) if len > 0 => {
+            let pb = ProgressBar::new(len as u64);
+            pb.set_style(
+                ProgressStyle::with_template("{prefix:<10} {wide_bar} {pos}/{len} [{msg}]")
+                    .unwrap()
+                    .progress_chars("=>-"),
+            );
+            pb.set_prefix(prefix);
+            pb
+        }
+        _ => {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("{prefix:<10} {spinner} {msg}")
+                    .unwrap()
+                    .tick_chars("/-\\| "),
+            );
+            pb.set_prefix(prefix);
+            pb.enable_steady_tick(Duration::from_millis(100));
+            pb
+        }
+    }
 }
 
 impl<B: Backend> TextBatch<B> {
