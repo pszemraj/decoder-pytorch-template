@@ -10,10 +10,10 @@ use burn::{
         attention::generate_autoregressive_mask, Embedding, EmbeddingConfig, Linear, LinearConfig,
         RmsNorm, RmsNormConfig, RotaryEncoding, RotaryEncodingConfig, SwiGlu, SwiGluConfig,
     },
-    tensor::{activation::softmax, backend::Backend, Bool, DType, Int, Tensor},
+    tensor::{backend::Backend, Bool, Int, Tensor},
 };
 
-use crate::config::ModelConfig;
+use crate::{config::ModelConfig, tensor_utils::softmax_fp32_if_needed};
 
 #[derive(Module, Debug)]
 pub struct FeedForward<B: Backend> {
@@ -109,10 +109,15 @@ impl<B: Backend> Attention<B> {
         let scale = (self.head_dim as f32).sqrt();
         scores = scores / scale;
 
-        let attn_mask = mask.clone().unsqueeze_dim(1).repeat_dim(1, self.n_heads);
-        let scores = scores.mask_fill(attn_mask, f32::NEG_INFINITY);
+        let causal_bias = mask
+            .clone()
+            .unsqueeze_dim(1)
+            .float()
+            .mul_scalar(-1e4)
+            .cast(scores.dtype());
+        let scores = scores + causal_bias;
 
-        let attn_weights = softmax_stable(scores, 3);
+        let attn_weights = softmax_fp32_if_needed(scores, 3);
         let context = attn_weights.matmul(v);
 
         let output =
@@ -236,7 +241,7 @@ impl<B: Backend> LlamaModel<B> {
     }
 
     pub fn forward(&self, input_ids: Tensor<B, 2, Int>, position_offset: usize) -> Tensor<B, 3> {
-        let [batch_size, seq_len] = input_ids.dims();
+        let [_batch_size, seq_len] = input_ids.dims();
         let device = input_ids.device();
         assert!(
             seq_len <= self.max_position_embeddings,
@@ -248,7 +253,7 @@ impl<B: Backend> LlamaModel<B> {
             position_offset.min(self.max_position_embeddings.saturating_sub(seq_len));
 
         let mut hidden_states = self.embed_tokens.forward(input_ids);
-        let mask = generate_autoregressive_mask::<B>(batch_size, seq_len, &device);
+        let mask = generate_autoregressive_mask::<B>(1, seq_len, &device);
 
         for layer in &self.layers {
             hidden_states = layer.forward(hidden_states, &mask, position_offset);
@@ -281,15 +286,6 @@ impl<B: Backend> LlamaModel<B> {
         flattened
             .matmul(weight)
             .reshape([batch_size, seq_len, vocab_size])
-    }
-}
-
-fn softmax_stable<B: Backend, const D: usize>(tensor: Tensor<B, D>, dim: usize) -> Tensor<B, D> {
-    let dtype = tensor.dtype();
-    if matches!(dtype, DType::BF16 | DType::F16) {
-        softmax(tensor.cast(DType::F32), dim).cast(dtype)
-    } else {
-        softmax(tensor, dim)
     }
 }
 

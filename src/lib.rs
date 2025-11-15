@@ -1,6 +1,7 @@
 pub mod config;
 pub mod data;
 pub mod models;
+pub mod tensor_utils;
 pub mod train;
 
 pub use config::{InferenceConfig, ModelConfig, TrainingConfig};
