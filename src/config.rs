@@ -94,7 +94,7 @@ impl ModelConfig {
             self.intermediate_size.max(1)
         };
         let multiple = self.ffn_multiple_of.max(1);
-        ((base + multiple - 1) / multiple) * multiple
+        base.div_ceil(multiple) * multiple
     }
 }
 

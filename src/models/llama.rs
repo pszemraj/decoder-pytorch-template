@@ -5,36 +5,69 @@
 //! export it through `models/mod.rs` so the trainer can pick it up.
 
 use burn::{
-    module::{Initializer, Module},
+    module::{Initializer, Module, Param},
     nn::{
         attention::generate_autoregressive_mask, Embedding, EmbeddingConfig, Linear, LinearConfig,
-        RmsNorm, RmsNormConfig, RotaryEncoding, RotaryEncodingConfig, SwiGlu, SwiGluConfig,
+        RmsNorm, RmsNormConfig, RotaryEncoding, RotaryEncodingConfig,
     },
-    tensor::{backend::Backend, Bool, Int, Tensor},
+    tensor::{backend::Backend, Bool, DType, Int, Tensor},
 };
+use std::sync::Once;
 
 use crate::{config::ModelConfig, tensor_utils::softmax_fp32_if_needed};
 
+static BF16_LOG_ONCE: Once = Once::new();
+
+fn mm_autocast_bf16<B: Backend>(
+    x: Tensor<B, 3>,
+    w_f32: &Param<Tensor<B, 2>>,
+    use_bf16: bool,
+) -> Tensor<B, 3> {
+    // Expand weight for batched matmul: [hidden, out] -> [1, hidden, out]
+    let w_f32_expanded = w_f32.val().unsqueeze_dim(0);
+    if use_bf16 {
+        let x_b = x.cast(DType::BF16);
+        let w_b = w_f32_expanded.clone().cast(DType::BF16);
+        BF16_LOG_ONCE
+            .call_once(|| log::info!("BF16 GEMM active: x={:?} w={:?}", x_b.dtype(), w_b.dtype()));
+        x_b.matmul(w_b).cast(DType::F32)
+    } else {
+        x.matmul(w_f32_expanded)
+    }
+}
+
 #[derive(Module, Debug)]
 pub struct FeedForward<B: Backend> {
-    gate: SwiGlu<B>,
+    up_gate: Linear<B>,
+    up_val: Linear<B>,
     down_proj: Linear<B>,
 }
 
 impl<B: Backend> FeedForward<B> {
     pub fn new(dim: usize, hidden_dim: usize, device: &B::Device) -> Self {
-        let gate = SwiGluConfig::new(dim, hidden_dim)
+        let up_gate = LinearConfig::new(dim, hidden_dim)
+            .with_bias(false)
+            .init(device);
+        let up_val = LinearConfig::new(dim, hidden_dim)
             .with_bias(false)
             .init(device);
         let down_proj = LinearConfig::new(hidden_dim, dim)
             .with_bias(false)
             .init(device);
 
-        Self { gate, down_proj }
+        Self {
+            up_gate,
+            up_val,
+            down_proj,
+        }
     }
 
-    pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
-        self.down_proj.forward(self.gate.forward(x))
+    pub fn forward(&self, x: Tensor<B, 3>, use_bf16_gemm: bool) -> Tensor<B, 3> {
+        use burn::tensor::activation::silu;
+        let a = mm_autocast_bf16(x.clone(), &self.up_gate.weight, use_bf16_gemm);
+        let b = mm_autocast_bf16(x, &self.up_val.weight, use_bf16_gemm);
+        let gated = silu(a) * b;
+        mm_autocast_bf16(gated, &self.down_proj.weight, use_bf16_gemm)
     }
 }
 
@@ -92,12 +125,13 @@ impl<B: Backend> Attention<B> {
         hidden_states: Tensor<B, 3>,
         mask: &Tensor<B, 3, Bool>,
         position_offset: usize,
+        use_bf16_gemm: bool,
     ) -> Tensor<B, 3> {
         let [batch_size, seq_len, _] = hidden_states.dims();
 
-        let q = self.q_proj.forward(hidden_states.clone());
-        let k = self.k_proj.forward(hidden_states.clone());
-        let v = self.v_proj.forward(hidden_states);
+        let q = mm_autocast_bf16(hidden_states.clone(), &self.q_proj.weight, use_bf16_gemm);
+        let k = mm_autocast_bf16(hidden_states.clone(), &self.k_proj.weight, use_bf16_gemm);
+        let v = mm_autocast_bf16(hidden_states, &self.v_proj.weight, use_bf16_gemm);
 
         let q = self.prepare(q, position_offset, batch_size, seq_len);
         let k = self.prepare(k, position_offset, batch_size, seq_len);
@@ -125,7 +159,7 @@ impl<B: Backend> Attention<B> {
                 .swap_dims(1, 2)
                 .reshape([batch_size, seq_len, self.n_heads * self.head_dim]);
 
-        self.o_proj.forward(output)
+        mm_autocast_bf16(output, &self.o_proj.weight, use_bf16_gemm)
     }
 
     fn prepare(
@@ -151,10 +185,12 @@ pub struct TransformerBlock<B: Backend> {
     feed_forward: FeedForward<B>,
     attention_norm: RmsNorm<B>,
     ffn_norm: RmsNorm<B>,
+    #[module(constant)]
+    use_bf16_gemm: bool,
 }
 
 impl<B: Backend> TransformerBlock<B> {
-    pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
+    pub fn new(config: &ModelConfig, device: &B::Device, use_bf16_gemm: bool) -> Self {
         let attention = Attention::new(config, device);
         let feed_forward =
             FeedForward::new(config.hidden_size, config.feedforward_hidden_size(), device);
@@ -170,6 +206,7 @@ impl<B: Backend> TransformerBlock<B> {
             feed_forward,
             attention_norm,
             ffn_norm,
+            use_bf16_gemm,
         }
     }
 
@@ -181,12 +218,14 @@ impl<B: Backend> TransformerBlock<B> {
     ) -> Tensor<B, 3> {
         let residual = hidden_states.clone();
         let hidden_states = self.attention_norm.forward(hidden_states);
-        let hidden_states = self.attention.forward(hidden_states, mask, position_offset);
+        let hidden_states =
+            self.attention
+                .forward(hidden_states, mask, position_offset, self.use_bf16_gemm);
         let hidden_states = residual + hidden_states;
 
         let residual = hidden_states.clone();
         let hidden_states = self.ffn_norm.forward(hidden_states);
-        let hidden_states = self.feed_forward.forward(hidden_states);
+        let hidden_states = self.feed_forward.forward(hidden_states, self.use_bf16_gemm);
         residual + hidden_states
     }
 }
@@ -202,10 +241,12 @@ pub struct LlamaModel<B: Backend> {
     max_position_embeddings: usize,
     #[module(constant)]
     tie_embeddings: bool,
+    #[module(constant)]
+    use_bf16_gemm: bool,
 }
 
 impl<B: Backend> LlamaModel<B> {
-    pub fn new(config: ModelConfig, device: &B::Device) -> Self {
+    pub fn new(config: ModelConfig, device: &B::Device, use_bf16_gemm: bool) -> Self {
         let weight_init = Initializer::Normal {
             mean: 0.0,
             std: 0.02,
@@ -214,7 +255,7 @@ impl<B: Backend> LlamaModel<B> {
             .with_initializer(weight_init.clone())
             .init(device);
         let layers = (0..config.n_layers)
-            .map(|_| TransformerBlock::new(&config, device))
+            .map(|_| TransformerBlock::new(&config, device, use_bf16_gemm))
             .collect();
         let norm = RmsNormConfig::new(config.hidden_size)
             .with_epsilon(1e-6)
@@ -237,6 +278,7 @@ impl<B: Backend> LlamaModel<B> {
             lm_head,
             max_position_embeddings: config.max_position_embeddings,
             tie_embeddings: config.tie_embeddings,
+            use_bf16_gemm,
         }
     }
 
@@ -300,7 +342,7 @@ mod tests {
     fn test_model_creation() {
         let device = Default::default();
         let config = ModelConfig::test();
-        let model = LlamaModel::<TestBackend>::new(config, &device);
+        let model = LlamaModel::<TestBackend>::new(config, &device, false);
 
         let input_ids = Tensor::<TestBackend, 2, Int>::zeros([2, 10], &device);
         let output = model.forward(input_ids, 0);

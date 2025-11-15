@@ -35,7 +35,8 @@ pub fn train<B: AutodiffBackend>(
 ) -> Result<()> {
     B::seed(&device, config.seed);
 
-    let mut model = LlamaModel::<B>::new(config.model.clone(), &device);
+    let use_bf16_gemm = matches!(precision, PrecisionMode::MixedBf16);
+    let mut model = LlamaModel::<B>::new(config.model.clone(), &device, use_bf16_gemm);
     log::info!(
         "Total parameters: {}",
         format_param_count(count_params(&model))
@@ -53,7 +54,7 @@ pub fn train<B: AutodiffBackend>(
 
     if matches!(precision, PrecisionMode::MixedBf16) {
         log::warn!(
-            "bf16 training currently runs with fp32 master weights (activations cast to bf16 where safe)"
+            "CUDA bf16 = fp32 master weights + bf16 matmuls (qkv/o, ffn); norms/softmax stay fp32"
         );
     }
 
@@ -96,7 +97,6 @@ pub fn train<B: AutodiffBackend>(
     }
     while global_step < total_steps {
         let mut loss_tensor: Option<Tensor<B, 1>> = None;
-        let mut loss_sum = 0.0f32;
         let mut token_sum = 0.0f32;
         let mut saved_checkpoint = false;
         let micro_batch_size = config.batch_size.max(1);
@@ -119,18 +119,19 @@ pub fn train<B: AutodiffBackend>(
                 None => loss_sum_tensor.clone(),
             });
 
-            loss_sum += loss_sum_tensor.into_scalar().elem::<f32>();
             token_sum += tokens;
         }
 
-        let normalized_loss =
-            loss_tensor.ok_or_else(|| anyhow!("No loss accumulated for this step"))? / token_sum;
+        let total_loss_tensor =
+            loss_tensor.ok_or_else(|| anyhow!("No loss accumulated for this step"))?;
+        let normalized_loss = total_loss_tensor.clone() / token_sum;
         let grads = normalized_loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
         model = optimizer.step(config.learning_rate, model, grads);
 
         global_step += 1;
-        let avg_loss = loss_sum / token_sum;
+        // Single host sync per optimizer step (not per micro-batch)
+        let avg_loss = normalized_loss.into_scalar().elem::<f32>();
         progress.set_position(global_step as u64);
         let elapsed = train_start.elapsed().as_secs_f64().max(1e-9);
         let it_per_sec = global_step as f64 / elapsed;
