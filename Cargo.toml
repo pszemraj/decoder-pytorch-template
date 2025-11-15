@@ -30,6 +30,12 @@ indicatif = "0.17"
 [dev-dependencies]
 pretty_assertions = "1.4"
 
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -138,6 +138,8 @@ Ensure you have Burn 0.19:
 burn = { version = "0.19", features = ["std", "train", "wgpu"] }
 ```
 
+- If you bump into an `evaluate_obligation` incremental ICE from `rustc` (seen as "encountered incremental compilation error ... canonical"), it's a compiler bug. Incremental builds are now disabled for dev/test profiles in `Cargo.toml`; if you manually re-enable them, run `cargo clean -p burn-llama` to unstick the build or set `CARGO_INCREMENTAL=0`.
+
 ## Roadmap
 
 - [x] Basic Llama architecture
