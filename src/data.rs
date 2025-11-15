@@ -180,6 +180,12 @@ impl WikiDataset {
             .read_to_end(&mut data)
             .context("Failed to decompress data")?;
 
+        // Match the Python pipeline: only keep the first ~95MB of uncompressed data.
+        let max_bytes = 95_000_000usize;
+        if data.len() > max_bytes {
+            data.truncate(max_bytes);
+        }
+
         // Split 90/10 for train/val
         let split_idx = (data.len() as f32 * 0.9) as usize;
         let train_data = data[..split_idx].to_vec();

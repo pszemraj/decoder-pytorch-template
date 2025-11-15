@@ -2,14 +2,10 @@ use anyhow::{anyhow, Result};
 use burn::{
     grad_clipping::GradientClippingConfig,
     module::AutodiffModule,
-    optim::{AdamWConfig, GradientsParams, Optimizer},
+    optim::{decay::WeightDecayConfig, AdamConfig, GradientsParams, Optimizer},
     prelude::*,
     record::{CompactRecorder, Recorder},
-    tensor::{
-        activation::{log_softmax, softmax},
-        backend::AutodiffBackend,
-        ElementConversion, Int, Tensor,
-    },
+    tensor::{backend::AutodiffBackend, ElementConversion, Int, Tensor},
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::random;
@@ -22,6 +18,7 @@ use crate::{
     config::TrainingConfig,
     data::{ByteTokenizer, CharDataset, TextBatcher, Tokenizer, WikiDataset},
     models::LlamaModel,
+    tensor_utils::softmax_fp32_if_needed,
 };
 
 /// Training loop aligned with `train.py`.
@@ -34,8 +31,13 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         format_param_count(count_params(&model))
     );
 
-    let mut optimizer = AdamWConfig::new()
-        .with_weight_decay(config.weight_decay)
+    let weight_decay = if config.weight_decay > 0.0 {
+        Some(WeightDecayConfig::new(config.weight_decay))
+    } else {
+        None
+    };
+    let mut optimizer = AdamConfig::new()
+        .with_weight_decay(weight_decay)
         .with_grad_clipping(Some(GradientClippingConfig::Value(config.gradient_clip)))
         .init();
 
@@ -287,7 +289,7 @@ fn sample_next_token<B: Backend>(
         temperature
     };
     let scaled = logits / temp;
-    let probs = softmax(scaled, 0);
+    let probs = softmax_fp32_if_needed(scaled, 0);
     let data = probs.to_data();
     let values: Vec<f32> = data.iter::<f32>().collect();
     let mut ranked: Vec<(usize, f32)> = values.into_iter().enumerate().collect();
@@ -330,7 +332,7 @@ struct GenerationSettings {
     min_p: f32,
 }
 fn cross_entropy<B: Backend>(logits: Tensor<B, 2>, targets: Tensor<B, 1, Int>) -> Tensor<B, 1> {
-    let log_probs = log_softmax(logits, 1);
+    let log_probs = burn::tensor::activation::log_softmax(logits, 1);
     let [batch, _] = log_probs.dims();
     let gathered = log_probs
         .gather(1, targets.reshape([batch, 1]))

@@ -1,6 +1,6 @@
 use burn::tensor::{activation::softmax, backend::Backend, DType, Tensor};
 
-/// Run softmax in fp32 when the current dtype is bf16/f16, casting back afterwards.
+/// Run softmax in fp32 when the backend dtype is bf16/f16.
 pub fn softmax_fp32_if_needed<B: Backend, const D: usize>(
     tensor: Tensor<B, D>,
     dim: usize,
