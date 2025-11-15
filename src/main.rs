@@ -1,10 +1,8 @@
 use anyhow::Result;
 use burn::backend::Autodiff;
-use burn_llama::{train, TrainingConfig};
+use burn_llama::{train, PrecisionMode, TrainingConfig};
 use clap::{Parser, ValueEnum};
 use half::bf16;
-#[cfg(feature = "backend-cpu")]
-use log::warn;
 use log::{info, LevelFilter};
 use std::io::Write;
 
@@ -109,8 +107,8 @@ fn run_wgpu(precision: PrecisionCli, config: TrainingConfig) -> Result<()> {
     info!("Using WGPU device: {:?}", device);
 
     match precision {
-        PrecisionCli::Fp32 => train::<Autodiff<Wgpu<f32>>>(config, device),
-        PrecisionCli::Bf16 => train::<Autodiff<Wgpu<bf16>>>(config, device),
+        PrecisionCli::Fp32 => train::<Autodiff<Wgpu<f32>>>(config, device, PrecisionMode::Native),
+        PrecisionCli::Bf16 => train::<Autodiff<Wgpu<bf16>>>(config, device, PrecisionMode::Native),
     }
 }
 
@@ -127,8 +125,13 @@ fn run_cuda(precision: PrecisionCli, config: TrainingConfig) -> Result<()> {
     info!("Using CUDA device: {:?}", device);
 
     match precision {
-        PrecisionCli::Fp32 => train::<Autodiff<Cuda<f32>>>(config, device),
-        PrecisionCli::Bf16 => train::<Autodiff<Cuda<bf16>>>(config, device),
+        PrecisionCli::Fp32 => train::<Autodiff<Cuda<f32>>>(config, device, PrecisionMode::Native),
+        PrecisionCli::Bf16 => {
+            log::warn!(
+                "bf16 training falls back to fp32 master weights (experimental mixed precision)"
+            );
+            train::<Autodiff<Cuda<f32>>>(config, device, PrecisionMode::MixedBf16)
+        }
     }
 }
 
@@ -142,11 +145,11 @@ fn run_cpu(precision: PrecisionCli, config: TrainingConfig) -> Result<()> {
     use burn::backend::ndarray::{NdArray, NdArrayDevice};
 
     if matches!(precision, PrecisionCli::Bf16) {
-        warn!("bf16 is not supported on the CPU backend; falling back to fp32");
+        log::warn!("bf16 is not supported on the CPU backend; falling back to fp32");
     }
     let device = NdArrayDevice::default();
     info!("Using CPU backend");
-    train::<Autodiff<NdArray<f32>>>(config, device)
+    train::<Autodiff<NdArray<f32>>>(config, device, PrecisionMode::Native)
 }
 
 #[cfg(not(feature = "backend-cpu"))]

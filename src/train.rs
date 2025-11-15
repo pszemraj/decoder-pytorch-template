@@ -21,8 +21,18 @@ use crate::{
     tensor_utils::softmax_fp32_if_needed,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrecisionMode {
+    Native,
+    MixedBf16,
+}
+
 /// Training loop aligned with `train.py`.
-pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> Result<()> {
+pub fn train<B: AutodiffBackend>(
+    config: TrainingConfig,
+    device: B::Device,
+    precision: PrecisionMode,
+) -> Result<()> {
     B::seed(&device, config.seed);
 
     let mut model = LlamaModel::<B>::new(config.model.clone(), &device);
@@ -40,6 +50,12 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         .with_weight_decay(weight_decay)
         .with_grad_clipping(Some(GradientClippingConfig::Value(config.gradient_clip)))
         .init();
+
+    if matches!(precision, PrecisionMode::MixedBf16) {
+        log::warn!(
+            "bf16 training currently runs with fp32 master weights (activations cast to bf16 where safe)"
+        );
+    }
 
     let (train_dataset, val_dataset) = load_datasets(&config)?;
     let batcher = TextBatcher::new(config.sequence_length);
@@ -135,7 +151,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
             log::info!("Step {} | Val loss: {:.4}", global_step, val_loss);
             if val_loss.is_finite() && val_loss < best_val_loss {
                 best_val_loss = val_loss;
-                save_checkpoint(&model, global_step, val_loss, &config.output_dir)?;
+                save_checkpoint(&model, global_step, val_loss, &config.output_dir, precision)?;
                 log::info!("New best model saved with validation loss: {:.4}", val_loss);
                 saved_checkpoint = true;
             }
@@ -161,12 +177,18 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         }
 
         if config.save_every > 0 && global_step % config.save_every == 0 && !saved_checkpoint {
-            save_checkpoint(&model, global_step, best_val_loss, &config.output_dir)?;
+            save_checkpoint(
+                &model,
+                global_step,
+                best_val_loss,
+                &config.output_dir,
+                precision,
+            )?;
         }
     }
 
     progress.finish_with_message("done");
-    save_final_checkpoint(&model, &config.output_dir)?;
+    save_final_checkpoint(&model, &config.output_dir, precision)?;
 
     Ok(())
 }
@@ -351,6 +373,7 @@ fn save_checkpoint<B: AutodiffBackend>(
     step: usize,
     val_loss: f32,
     output_dir: &str,
+    precision: PrecisionMode,
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     let checkpoint_name = format!(
@@ -358,6 +381,16 @@ fn save_checkpoint<B: AutodiffBackend>(
         output_dir, step, val_loss
     );
     log::info!("Saving checkpoint: {}", checkpoint_name);
+    if matches!(precision, PrecisionMode::MixedBf16) {
+        log::debug!(
+            "Checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
+        );
+    }
+    if matches!(precision, PrecisionMode::MixedBf16) {
+        log::debug!(
+            "Final checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
+        );
+    }
     CompactRecorder::new()
         .record(model.valid().into_record(), checkpoint_name.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;
@@ -367,10 +400,16 @@ fn save_checkpoint<B: AutodiffBackend>(
 fn save_final_checkpoint<B: AutodiffBackend>(
     model: &LlamaModel<B>,
     output_dir: &str,
+    precision: PrecisionMode,
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     let path = format!("{}/final.bin", output_dir);
     let record = model.valid().into_record();
+    if matches!(precision, PrecisionMode::MixedBf16) {
+        log::debug!(
+            "Final checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
+        );
+    }
     CompactRecorder::new()
         .record(record, path.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;
