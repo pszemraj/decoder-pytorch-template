@@ -74,7 +74,7 @@ output_dir: runs/my-exp
 ## Project Layout
 
 ```
-decoder-pytorch-template/
+decoder-burn-template/
 ├── src/
 │   ├── models/
 │   │   ├── llama.rs   # Reference decoder (RoPE, SwiGLU, RMSNorm)
@@ -176,7 +176,7 @@ MIT
 ## Citation
 
 ```bibtex
-@software{burn_llama_2024,
+@software{szemraj2025decoderburn,
   title = {Burn Llama: Modern Implementation with Burn 0.19},
   author = {Peter Szemraj},
   year = {2025},

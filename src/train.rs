@@ -69,6 +69,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         let mut loss_tensor: Option<Tensor<B, 1>> = None;
         let mut loss_sum = 0.0f32;
         let mut token_sum = 0.0f32;
+        let mut saved_checkpoint = false;
 
         for _ in 0..config.gradient_accumulation_steps.max(1) {
             let batch = train_dataset.sample_batch::<B>(&batcher, config.batch_size, &device);
@@ -119,6 +120,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
                 best_val_loss = val_loss;
                 save_checkpoint(&model, global_step, val_loss, &config.output_dir)?;
                 log::info!("New best model saved with validation loss: {:.4}", val_loss);
+                saved_checkpoint = true;
             }
         }
 
@@ -129,17 +131,22 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
                     &gen_model,
                     &val_dataset,
                     &tokenizer,
-                    config.generation_prompt_length,
-                    config.generation_length,
-                    config.temperature,
-                    config.min_p,
+                    &GenerationSettings {
+                        prompt_len: config.generation_prompt_length,
+                        gen_len: config.generation_length,
+                        temperature: config.temperature,
+                        min_p: config.min_p,
+                    },
                     global_step,
                     &device,
                 )
             })?;
         }
 
-        if config.save_every > 0 && global_step % config.save_every == 0 {
+        if config.save_every > 0
+            && global_step % config.save_every == 0
+            && !saved_checkpoint
+        {
             save_checkpoint(&model, global_step, best_val_loss, &config.output_dir)?;
         }
     }
@@ -189,16 +196,20 @@ fn generate_preview<B: Backend>(
     model: &LlamaModel<B>,
     dataset: &CharDataset,
     tokenizer: &ByteTokenizer,
-    prompt_len: usize,
-    gen_len: usize,
-    temperature: f32,
-    min_p: f32,
+    settings: &GenerationSettings,
     step: usize,
     device: &B::Device,
 ) -> Result<()> {
-    if let Some(prompt_tokens) = dataset.sample_prompt(prompt_len) {
+    if let Some(prompt_tokens) = dataset.sample_prompt(settings.prompt_len) {
         let prompt_text = tokenizer.decode(&prompt_tokens);
-        let generated = generate_text(model, &prompt_tokens, gen_len, temperature, min_p, device)?;
+        let generated = generate_text(
+            model,
+            &prompt_tokens,
+            settings.gen_len,
+            settings.temperature,
+            settings.min_p,
+            device,
+        )?;
         let completion = if generated.len() > prompt_tokens.len() {
             &generated[prompt_tokens.len()..]
         } else {
@@ -207,7 +218,7 @@ fn generate_preview<B: Backend>(
         let completion_text = tokenizer.decode(completion);
 
         log::info!(
-            "\n================================================== Step {} ==================================================",
+            "================================================== Step {} ==================================================",
             step
         );
         log::info!("Prompt: {}", prompt_text);
@@ -300,6 +311,12 @@ fn sample_next_token<B: Backend>(
     Ok(0)
 }
 
+struct GenerationSettings {
+    prompt_len: usize,
+    gen_len: usize,
+    temperature: f32,
+    min_p: f32,
+}
 fn cross_entropy<B: Backend>(logits: Tensor<B, 2>, targets: Tensor<B, 1, Int>) -> Tensor<B, 1> {
     let log_probs = log_softmax(logits, 1);
     let [batch, _] = log_probs.dims();

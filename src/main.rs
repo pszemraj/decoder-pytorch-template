@@ -6,6 +6,7 @@ use half::bf16;
 #[cfg(feature = "backend-cpu")]
 use log::warn;
 use log::{info, LevelFilter};
+use std::io::Write;
 
 /// Minimal launcher: `cargo run --release -- configs/test.yaml`
 #[derive(Parser, Debug)]
@@ -52,6 +53,7 @@ fn main() -> Result<()> {
         _ => LevelFilter::Trace,
     };
     env_logger::Builder::new()
+        .format(|buf, record| writeln!(buf, "[{}] {}", record.level(), record.args()))
         .filter_level(LevelFilter::Warn)
         .filter_module("burn_llama", log_level)
         .init();
@@ -79,7 +81,6 @@ fn main() -> Result<()> {
         PrecisionCli::Fp32
     });
 
-    info!("Starting training with config: {:#?}", training_config);
     run_backend(backend_choice, precision_choice, training_config)?;
 
     Ok(())
