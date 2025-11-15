@@ -13,7 +13,10 @@ use burn::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use rand::random;
-use std::fs;
+use std::{
+    fs,
+    time::{Duration, Instant},
+};
 
 use crate::{
     config::TrainingConfig,
@@ -47,12 +50,14 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     let progress = ProgressBar::new(total_steps as u64);
     progress.set_style(
         ProgressStyle::with_template(
-            "training: {percent:>3}%|{bar:40.cyan/blue}| {pos}/{len} [{msg}]",
+            "training: {elapsed_precise} |{bar:40.cyan/blue}| {pos}/{len} ({eta_precise}) [{msg}]",
         )
         .unwrap()
         .progress_chars("=>-"),
     );
-    progress.set_message("loss=----");
+    progress.enable_steady_tick(Duration::from_millis(200));
+    progress.set_message("loss=---- | it/s=--");
+    let train_start = Instant::now();
 
     // Initial validation
     let val_start = validate(
@@ -109,7 +114,9 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         global_step += 1;
         let avg_loss = loss_sum / token_sum;
         progress.set_position(global_step as u64);
-        progress.set_message(format!("loss={avg_loss:.4}"));
+        let elapsed = train_start.elapsed().as_secs_f64().max(1e-9);
+        let it_per_sec = global_step as f64 / elapsed;
+        progress.set_message(format!("loss={avg_loss:.4} | it/s={it_per_sec:.2}"));
 
         if config.validate_every > 0 && global_step % config.validate_every == 0 {
             let val_model = model.valid();

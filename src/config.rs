@@ -42,6 +42,10 @@ pub struct ModelConfig {
     /// Optional multiplier for the feed-forward hidden size (takes precedence over `intermediate_size` when > 0)
     #[config(default = 0.0)]
     pub ffn_multiplier: f32,
+
+    /// Round the feed-forward hidden size up to a multiple of this value.
+    #[config(default = 256)]
+    pub ffn_multiple_of: usize,
 }
 
 impl ModelConfig {
@@ -84,12 +88,13 @@ impl ModelConfig {
 
     /// Effective hidden size for the feed-forward block.
     pub fn feedforward_hidden_size(&self) -> usize {
-        if self.ffn_multiplier > 0.0 {
-            let computed = (self.hidden_size as f32 * self.ffn_multiplier).round() as usize;
-            computed.max(1)
+        let base = if self.ffn_multiplier > 0.0 {
+            (self.hidden_size as f32 * self.ffn_multiplier).round() as usize
         } else {
             self.intermediate_size.max(1)
-        }
+        };
+        let multiple = self.ffn_multiple_of.max(1);
+        ((base + multiple - 1) / multiple) * multiple
     }
 }
 

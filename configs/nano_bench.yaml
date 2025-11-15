@@ -5,6 +5,7 @@ model:
   n_heads: 6
   intermediate_size: 576
   ffn_multiplier: 1.5
+  ffn_multiple_of: 256
   rope_theta: 10000.0
   max_position_embeddings: 512
   dropout: 0.0
@@ -16,7 +17,7 @@ val_data: data/enwik8.gz
 batch_size: 1
 sequence_length: 512
 num_batches: 1200
-learning_rate: 0.002
+learning_rate: 0.0003
 weight_decay: 0.0003
 gradient_clip: 1.0
 gradient_accumulation_steps: 16
