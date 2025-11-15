@@ -166,6 +166,8 @@ cython_debug/
 
 # Training outputs
 runs/
+logs/
+checkpoints/
 
 # Ruff cache
 .ruff_cache/
