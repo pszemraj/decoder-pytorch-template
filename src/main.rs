@@ -4,6 +4,7 @@ use burn_llama::{train, PrecisionMode, TrainingConfig};
 use clap::{Parser, ValueEnum};
 use half::bf16;
 use log::{info, LevelFilter};
+use serde_saphyr as yaml;
 use std::io::Write;
 
 /// Minimal launcher: `cargo run --release -- configs/test.yaml`
@@ -86,7 +87,7 @@ fn main() -> Result<()> {
 
 fn load_config(path: &str) -> Result<TrainingConfig> {
     let config_str = std::fs::read_to_string(path)?;
-    let config: TrainingConfig = serde_yaml::from_str(&config_str)?;
+    let config: TrainingConfig = yaml::from_str(&config_str)?;
     Ok(config)
 }
 
