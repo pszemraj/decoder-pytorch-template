@@ -38,6 +38,10 @@ pub struct ModelConfig {
     /// Tie token embedding weights to the LM head
     #[config(default = true)]
     pub tie_embeddings: bool,
+
+    /// Optional multiplier for the feed-forward hidden size (takes precedence over `intermediate_size` when > 0)
+    #[config(default = 0.0)]
+    pub ffn_multiplier: f32,
 }
 
 impl ModelConfig {
@@ -56,7 +60,8 @@ impl ModelConfig {
             .with_hidden_size(384)
             .with_n_layers(6)
             .with_n_heads(6)
-            .with_intermediate_size(1536)
+            .with_intermediate_size(576)
+            .with_ffn_multiplier(1.5)
     }
 
     /// Small model (~100M params)
@@ -75,6 +80,16 @@ impl ModelConfig {
             .with_n_layers(24)
             .with_n_heads(16)
             .with_intermediate_size(4096)
+    }
+
+    /// Effective hidden size for the feed-forward block.
+    pub fn feedforward_hidden_size(&self) -> usize {
+        if self.ffn_multiplier > 0.0 {
+            let computed = (self.hidden_size as f32 * self.ffn_multiplier).round() as usize;
+            computed.max(1)
+        } else {
+            self.intermediate_size.max(1)
+        }
     }
 }
 

@@ -1,0 +1,36 @@
+# Same hyperparameters as `configs/nano_bench.yaml` but using the Python trainer.
+run_dir: runs/nano_python_bench
+
+# Model
+num_tokens: 256
+dim: 384
+depth: 6
+heads: 6
+dim_head: 64
+tied_embedding: true
+ffn_dim_multiplier: 1.5
+flash_attn: false
+compile: false
+use_autocast: true
+
+# Training schedule
+num_batches: 1200
+batch_size: 1
+grad_accum_every: 16
+learning_rate: 0.0003
+weight_decay: 0.0003
+grad_clip_norm: 1.0
+
+# Data
+data_path: data/enwik8.gz
+seq_len: 512
+
+# training/validation/generation
+validate_every: 200
+val_batches: 20
+generate_every: 600
+save_every: 600
+temperature: 1.0
+min_p: 0.1
+
+seed: 7

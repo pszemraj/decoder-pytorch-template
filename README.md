@@ -51,6 +51,7 @@ model:
   n_layers: 12
   n_heads: 12
   intermediate_size: 3072
+  ffn_multiplier: 4.0  # optional override for FFN size (hidden_size * multiplier)
   rope_theta: 10000.0
   max_position_embeddings: 2048
   tie_embeddings: true  # share token embed and LM head weights

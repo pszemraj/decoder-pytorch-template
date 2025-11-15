@@ -151,7 +151,8 @@ pub struct TransformerBlock<B: Backend> {
 impl<B: Backend> TransformerBlock<B> {
     pub fn new(config: &ModelConfig, device: &B::Device) -> Self {
         let attention = Attention::new(config, device);
-        let feed_forward = FeedForward::new(config.hidden_size, config.intermediate_size, device);
+        let feed_forward =
+            FeedForward::new(config.hidden_size, config.feedforward_hidden_size(), device);
         let attention_norm = RmsNormConfig::new(config.hidden_size)
             .with_epsilon(1e-6)
             .init(device);
