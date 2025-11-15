@@ -22,7 +22,7 @@ gradient_clip: 1.0
 gradient_accumulation_steps: 16
 validate_every: 200
 val_batches: 20
-generate_every: 600
+generate_every: 200
 save_every: 600
 generation_length: 256
 generation_prompt_length: 128

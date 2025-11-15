@@ -28,7 +28,7 @@ seq_len: 512
 # training/validation/generation
 validate_every: 200
 val_batches: 20
-generate_every: 600
+generate_every: 200
 save_every: 600
 temperature: 1.0
 min_p: 0.1
