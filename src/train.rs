@@ -71,33 +71,16 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
     if config.gradient_accumulation_steps == 0 {
         log::warn!("gradient_accumulation_steps of 0 is invalid; defaulting to 1");
     }
-    let micro_batch_size = config.batch_size.max(1);
-    let grad_accum_steps = config.gradient_accumulation_steps.max(1);
-
     while global_step < total_steps {
         let mut loss_tensor: Option<Tensor<B, 1>> = None;
         let mut loss_sum = 0.0f32;
         let mut token_sum = 0.0f32;
         let mut saved_checkpoint = false;
+        let micro_batch_size = config.batch_size.max(1);
+        let grad_accum_steps = config.gradient_accumulation_steps.max(1);
 
-        let total_requested = micro_batch_size * grad_accum_steps;
-        let mega_batch = train_dataset.sample_batch::<B>(&batcher, total_requested, &device);
-        let available_rows = mega_batch.batch_size();
-        if available_rows < total_requested {
-            log::warn!(
-                "Requested {} samples for accumulation but dataset produced {}; using available rows",
-                total_requested,
-                available_rows
-            );
-        }
-        let max_micro_batches = available_rows / micro_batch_size;
-        if max_micro_batches == 0 {
-            continue;
-        }
-        let steps_this_round = grad_accum_steps.min(max_micro_batches);
-
-        for micro_idx in 0..steps_this_round {
-            let batch = mega_batch.chunk(micro_idx, micro_batch_size);
+        for _ in 0..grad_accum_steps {
+            let batch = train_dataset.sample_batch::<B>(&batcher, micro_batch_size, &device);
 
             let logits = model.forward(batch.tokens.clone(), 0);
             let [batch_size, seq_len, vocab_size] = logits.dims();

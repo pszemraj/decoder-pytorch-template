@@ -10,7 +10,7 @@ use burn::{
         attention::generate_autoregressive_mask, Embedding, EmbeddingConfig, Linear, LinearConfig,
         RmsNorm, RmsNormConfig, RotaryEncoding, RotaryEncodingConfig, SwiGlu, SwiGluConfig,
     },
-    tensor::{activation::softmax, backend::Backend, Bool, Int, Tensor},
+    tensor::{activation::softmax, backend::Backend, Bool, DType, Int, Tensor},
 };
 
 use crate::config::ModelConfig;
@@ -112,7 +112,7 @@ impl<B: Backend> Attention<B> {
         let attn_mask = mask.clone().unsqueeze_dim(1).repeat_dim(1, self.n_heads);
         let scores = scores.mask_fill(attn_mask, f32::NEG_INFINITY);
 
-        let attn_weights = softmax(scores, 3);
+        let attn_weights = softmax_stable(scores, 3);
         let context = attn_weights.matmul(v);
 
         let output =
@@ -281,6 +281,15 @@ impl<B: Backend> LlamaModel<B> {
         flattened
             .matmul(weight)
             .reshape([batch_size, seq_len, vocab_size])
+    }
+}
+
+fn softmax_stable<B: Backend, const D: usize>(tensor: Tensor<B, D>, dim: usize) -> Tensor<B, D> {
+    let dtype = tensor.dtype();
+    if matches!(dtype, DType::BF16 | DType::F16) {
+        softmax(tensor.cast(DType::F32), dim).cast(dtype)
+    } else {
+        softmax(tensor, dim)
     }
 }
 
