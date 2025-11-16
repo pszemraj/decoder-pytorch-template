@@ -11,6 +11,10 @@ Rust re-implementation of the PyTorch decoder playground from the `main` branch:
 - **Training parity with PyTorch** - gradient accumulation matches the Python version token-for-token.
 - **Auto dataset streaming** - includes `data/enwik8.gz`; no preprocessing required.
 
+> ⚠️ Mixed precision (CUDA): FP32 is the supported path. BF16/TF32 attention kernels in this build do **not** reach FP32 convergence. `--precision bf16` will run attention/FFN in FP32 by default and emit a warning. Experimental overrides: `ATTN_MODE=flex32` (TF32 compute, FP32 accum) or `ATTN_MODE=bf16` (known to diverge). Expect degraded loss/generations with overrides until Burn exposes BF16-with-FP32-accum GEMMs.
+
+> ℹ️ Flex32 note: Burn’s `Flex32` is *not* NVIDIA TF32. It stores values with F16 mantissa/range and computes in F32; attention still loses accuracy. Stick to FP32 for convergence.
+
 ## Quick Start
 
 ```bash

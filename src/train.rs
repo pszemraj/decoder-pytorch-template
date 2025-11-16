@@ -35,8 +35,36 @@ pub fn train<B: AutodiffBackend>(
 ) -> Result<()> {
     B::seed(&device, config.seed);
 
-    let use_bf16_gemm = matches!(precision, PrecisionMode::MixedBf16);
-    let mut model = LlamaModel::<B>::new(config.model.clone(), &device, use_bf16_gemm);
+    use crate::models::llama::{GemmMode, MpPolicy};
+    let mp_policy = match precision {
+        PrecisionMode::Native => MpPolicy::fp32(),
+        PrecisionMode::MixedBf16 => match std::env::var("ATTN_MODE").as_deref() {
+            Ok("bf16") => {
+                log::warn!(
+                    "ATTN_MODE=bf16 set: raw BF16 accum is known to diverge (expect poor loss/gens)"
+                );
+                MpPolicy {
+                    qkv: GemmMode::Bf16,
+                    o: GemmMode::Bf16,
+                    ffn_up: GemmMode::Fp32,
+                    ffn_down: GemmMode::Fp32,
+                }
+            }
+            Ok("flex32") => {
+                log::warn!("ATTN_MODE=flex32 set: using Flex32/TF32 in attention, FP32 FFN");
+                MpPolicy::attn_flex32_ffn_fp32()
+            }
+            Ok("fp32") => MpPolicy::fp32(),
+            _ => {
+                log::error!(
+                    "CUDA bf16 training is not stable in this build; running attention/FFN in FP32. \
+                     Set ATTN_MODE=flex32 or bf16 to experiment (unsupported)."
+                );
+                MpPolicy::fp32()
+            }
+        },
+    };
+    let mut model = LlamaModel::<B>::new(config.model.clone(), &device, mp_policy);
     log::info!(
         "Total parameters: {}",
         format_param_count(count_params(&model))

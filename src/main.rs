@@ -129,7 +129,7 @@ fn run_cuda(precision: PrecisionCli, config: TrainingConfig) -> Result<()> {
         PrecisionCli::Fp32 => train::<Autodiff<Cuda<f32>>>(config, device, PrecisionMode::Native),
         PrecisionCli::Bf16 => {
             log::warn!(
-                "bf16 training falls back to fp32 master weights (experimental mixed precision)"
+                "CUDA bf16 currently falls back to FP32 attention/FFN for stability; set ATTN_MODE=flex32 or bf16 to experiment (unsupported)"
             );
             train::<Autodiff<Cuda<f32>>>(config, device, PrecisionMode::MixedBf16)
         }
