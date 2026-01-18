@@ -167,8 +167,7 @@ fn linear_gemm_autocast<B: Backend>(
         GemmMode::Bf16 => {
             let x_b = x2.cast(DType::BF16);
             let w_b = w.clone().cast(DType::BF16);
-            GEMM_LOG_ONCE
-                .call_once(|| log::warn!("GEMM mode = BF16 (BF16 compute, F32 accum)"));
+            GEMM_LOG_ONCE.call_once(|| log::warn!("GEMM mode = BF16 (BF16 compute, F32 accum)"));
             x_b.matmul(w_b)
         }
     };

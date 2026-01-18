@@ -31,9 +31,7 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
         MpPolicy::bf16()
     } else {
         if config.mixed_precision {
-            log::warn!(
-                "mixed_precision=true but BF16 GEMMs are unsupported; falling back to fp32"
-            );
+            log::warn!("mixed_precision=true but BF16 GEMMs are unsupported; falling back to fp32");
         }
         MpPolicy::fp32()
     };
