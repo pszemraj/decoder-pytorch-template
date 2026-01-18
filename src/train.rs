@@ -20,49 +20,14 @@ use crate::{
     sampling::{sample_next_token, SamplingParams},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrecisionMode {
-    Native,
-    MixedBf16,
-}
-
 /// Training loop aligned with `train.py`.
-pub fn train<B: AutodiffBackend>(
-    config: TrainingConfig,
-    device: B::Device,
-    precision: PrecisionMode,
-) -> Result<()> {
+pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> Result<()> {
     B::seed(&device, config.seed);
 
-    use crate::models::llama::{GemmMode, MpPolicy};
-    let mp_policy = match precision {
-        PrecisionMode::Native => MpPolicy::fp32(),
-        PrecisionMode::MixedBf16 => match std::env::var("ATTN_MODE").as_deref() {
-            Ok("bf16") => {
-                log::warn!(
-                    "ATTN_MODE=bf16 set: raw BF16 accum is known to diverge (expect poor loss/gens)"
-                );
-                MpPolicy {
-                    qkv: GemmMode::Bf16,
-                    o: GemmMode::Bf16,
-                    ffn_up: GemmMode::Fp32,
-                    ffn_down: GemmMode::Fp32,
-                }
-            }
-            Ok("flex32") => {
-                log::warn!("ATTN_MODE=flex32 set: using Flex32/TF32 in attention, FP32 FFN");
-                MpPolicy::attn_flex32_ffn_fp32()
-            }
-            Ok("fp32") => MpPolicy::fp32(),
-            _ => {
-                log::error!(
-                    "CUDA bf16 training is not stable in this build; running attention/FFN in FP32. \
-                     Set ATTN_MODE=flex32 or bf16 to experiment (unsupported)."
-                );
-                MpPolicy::fp32()
-            }
-        },
-    };
+    use crate::models::llama::MpPolicy;
+    // MpPolicy controls per-layer GEMM precision for experimentation.
+    // With native bf16 backend, the backend handles autocast; fp32 policy keeps weights in fp32.
+    let mp_policy = MpPolicy::fp32();
     let mut model = LlamaModel::<B>::new(config.model.clone(), &device, mp_policy);
     log::info!(
         "Total parameters: {}",
@@ -78,12 +43,6 @@ pub fn train<B: AutodiffBackend>(
         .with_weight_decay(weight_decay)
         .with_grad_clipping(Some(GradientClippingConfig::Value(config.gradient_clip)))
         .init();
-
-    if matches!(precision, PrecisionMode::MixedBf16) {
-        log::warn!(
-            "CUDA bf16 = fp32 master weights + bf16 matmuls (qkv/o, ffn); norms/softmax stay fp32"
-        );
-    }
 
     let (train_dataset, val_dataset) = load_datasets(&config)?;
     let batcher = TextBatcher::new(config.sequence_length);
@@ -185,7 +144,6 @@ pub fn train<B: AutodiffBackend>(
                     global_step,
                     val_loss,
                     &config.output_dir,
-                    precision,
                 )?;
                 log::info!("New best model saved with validation loss: {:.4}", val_loss);
                 saved_checkpoint = true;
@@ -218,13 +176,12 @@ pub fn train<B: AutodiffBackend>(
                 global_step,
                 best_val_loss,
                 &config.output_dir,
-                precision,
             )?;
         }
     }
 
     progress.finish_with_message("done");
-    save_final_checkpoint(&model, &config.model, &config.output_dir, precision)?;
+    save_final_checkpoint(&model, &config.model, &config.output_dir)?;
 
     Ok(())
 }
@@ -367,7 +324,6 @@ fn save_checkpoint<B: AutodiffBackend>(
     step: usize,
     val_loss: f32,
     output_dir: &str,
-    precision: PrecisionMode,
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     let checkpoint_name = format!(
@@ -375,11 +331,6 @@ fn save_checkpoint<B: AutodiffBackend>(
         output_dir, step, val_loss
     );
     log::info!("Saving checkpoint: {}", checkpoint_name);
-    if matches!(precision, PrecisionMode::MixedBf16) {
-        log::debug!(
-            "Checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
-        );
-    }
     CompactRecorder::new()
         .record(model.valid().into_record(), checkpoint_name.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;
@@ -397,16 +348,10 @@ fn save_final_checkpoint<B: AutodiffBackend>(
     model: &LlamaModel<B>,
     model_config: &ModelConfig,
     output_dir: &str,
-    precision: PrecisionMode,
 ) -> Result<()> {
     fs::create_dir_all(output_dir)?;
     let path = format!("{}/final.bin", output_dir);
     let record = model.valid().into_record();
-    if matches!(precision, PrecisionMode::MixedBf16) {
-        log::debug!(
-            "Final checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
-        );
-    }
     CompactRecorder::new()
         .record(record, path.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;

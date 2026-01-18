@@ -13,7 +13,7 @@ pub use data::{ByteTokenizer, CharDataset, TextBatcher, Tokenizer, WikiDataset};
 pub use infer::{generate, load_checkpoint, load_model_config};
 pub use models::LlamaModel;
 pub use sampling::SamplingParams;
-pub use train::{train, PrecisionMode};
+pub use train::train;
 
 // Re-export commonly used items
 pub use burn::prelude::*;

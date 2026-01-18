@@ -5,7 +5,7 @@ use burn::backend::Autodiff;
 use burn_llama::{
     infer::{generate, load_checkpoint, load_model_config},
     sampling::SamplingParams,
-    train, PrecisionMode, TrainingConfig,
+    train, TrainingConfig,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use half::bf16;
@@ -208,8 +208,8 @@ fn run_train_wgpu(precision: PrecisionCli, config: TrainingConfig) -> Result<()>
     info!("Using WGPU device: {:?}", device);
 
     match precision {
-        PrecisionCli::Fp32 => train::<Autodiff<Wgpu<f32>>>(config, device, PrecisionMode::Native),
-        PrecisionCli::Bf16 => train::<Autodiff<Wgpu<bf16>>>(config, device, PrecisionMode::Native),
+        PrecisionCli::Fp32 => train::<Autodiff<Wgpu<f32>>>(config, device),
+        PrecisionCli::Bf16 => train::<Autodiff<Wgpu<bf16>>>(config, device),
     }
 }
 
@@ -226,13 +226,8 @@ fn run_train_cuda(precision: PrecisionCli, config: TrainingConfig) -> Result<()>
     info!("Using CUDA device: {:?}", device);
 
     match precision {
-        PrecisionCli::Fp32 => train::<Autodiff<Cuda<f32>>>(config, device, PrecisionMode::Native),
-        PrecisionCli::Bf16 => {
-            log::warn!(
-                "CUDA bf16 currently falls back to FP32 attention/FFN for stability; set ATTN_MODE=flex32 or bf16 to experiment (unsupported)"
-            );
-            train::<Autodiff<Cuda<f32>>>(config, device, PrecisionMode::MixedBf16)
-        }
+        PrecisionCli::Fp32 => train::<Autodiff<Cuda<f32>>>(config, device),
+        PrecisionCli::Bf16 => train::<Autodiff<Cuda<bf16>>>(config, device),
     }
 }
 
@@ -250,7 +245,7 @@ fn run_train_cpu(precision: PrecisionCli, config: TrainingConfig) -> Result<()> 
     }
     let device = NdArrayDevice::default();
     info!("Using CPU backend");
-    train::<Autodiff<NdArray<f32>>>(config, device, PrecisionMode::Native)
+    train::<Autodiff<NdArray<f32>>>(config, device)
 }
 
 #[cfg(not(feature = "backend-cpu"))]
