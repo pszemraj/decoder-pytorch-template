@@ -471,7 +471,7 @@ mod tests {
     fn test_model_creation() {
         let device = Default::default();
         let config = ModelConfig::test();
-        let model = LlamaModel::<TestBackend>::new(config, &device, MpPolicy::none());
+        let model = LlamaModel::<TestBackend>::new(config, &device, MpPolicy::fp32());
 
         let input_ids = Tensor::<TestBackend, 2, Int>::zeros([2, 10], &device);
         let output = model.forward(input_ids, 0);
