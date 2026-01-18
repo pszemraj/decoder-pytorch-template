@@ -234,15 +234,19 @@ pub struct InferenceConfig {
     #[config(default = 0.8)]
     pub temperature: f32,
 
-    /// Top-k filtering
+    /// Top-k filtering (0 = disabled)
     #[config(default = 50)]
     pub top_k: usize,
 
-    /// Top-p (nucleus) filtering
+    /// Top-p (nucleus) filtering (1.0 = disabled)
     #[config(default = 0.9)]
     pub top_p: f32,
 
-    /// Repetition penalty
+    /// Min-p filtering threshold (0.0 = disabled)
+    #[config(default = 0.0)]
+    pub min_p: f32,
+
+    /// Repetition penalty (1.0 = no penalty)
     #[config(default = 1.2)]
     pub repetition_penalty: f32,
 
