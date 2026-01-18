@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Burn 0.19 with modular backend selection
-burn = { version = "0.19", default-features = false, features = [
+# Burn 0.20 with modular backend selection
+burn = { version = "0.20", default-features = false, features = [
     "std",
     "train",
 ] }

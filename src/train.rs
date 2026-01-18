@@ -304,12 +304,27 @@ struct GenerationSettings {
     min_p: f32,
 }
 fn cross_entropy<B: Backend>(logits: Tensor<B, 2>, targets: Tensor<B, 1, Int>) -> Tensor<B, 1> {
-    let log_probs = burn::tensor::activation::log_softmax(logits, 1);
+    use burn::tensor::DType;
+    // Upcast to fp32 for log_softmax to avoid precision issues with bf16/f16
+    let dtype = logits.dtype();
+    let use_fp32 = matches!(dtype, DType::BF16 | DType::F16);
+    let logits_compute = if use_fp32 {
+        logits.cast(DType::F32)
+    } else {
+        logits
+    };
+    let log_probs = burn::tensor::activation::log_softmax(logits_compute, 1);
     let [batch, _] = log_probs.dims();
     let gathered = log_probs
         .gather(1, targets.reshape([batch, 1]))
         .reshape([batch]);
-    gathered.mean().neg()
+    let loss = gathered.mean().neg();
+    // Cast loss back to original dtype for gradient computation compatibility
+    if use_fp32 {
+        loss.cast(dtype)
+    } else {
+        loss
+    }
 }
 
 fn tokens_to_tensor<B: Backend>(tokens: &[i64], device: &B::Device) -> Tensor<B, 2, Int> {
