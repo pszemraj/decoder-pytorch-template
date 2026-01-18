@@ -8,17 +8,16 @@ use burn::{
     tensor::{backend::AutodiffBackend, ElementConversion, Int, Tensor},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use rand::random;
 use std::{
     fs,
     time::{Duration, Instant},
 };
 
 use crate::{
-    config::TrainingConfig,
+    config::{ModelConfig, TrainingConfig},
     data::{ByteTokenizer, CharDataset, TextBatcher, Tokenizer, WikiDataset},
     models::LlamaModel,
-    tensor_utils::softmax_fp32_if_needed,
+    sampling::{sample_next_token, SamplingParams},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +179,14 @@ pub fn train<B: AutodiffBackend>(
             log::info!("Step {} | Val loss: {:.4}", global_step, val_loss);
             if val_loss.is_finite() && val_loss < best_val_loss {
                 best_val_loss = val_loss;
-                save_checkpoint(&model, global_step, val_loss, &config.output_dir, precision)?;
+                save_checkpoint(
+                    &model,
+                    &config.model,
+                    global_step,
+                    val_loss,
+                    &config.output_dir,
+                    precision,
+                )?;
                 log::info!("New best model saved with validation loss: {:.4}", val_loss);
                 saved_checkpoint = true;
             }
@@ -208,6 +214,7 @@ pub fn train<B: AutodiffBackend>(
         if config.save_every > 0 && global_step % config.save_every == 0 && !saved_checkpoint {
             save_checkpoint(
                 &model,
+                &config.model,
                 global_step,
                 best_val_loss,
                 &config.output_dir,
@@ -217,7 +224,7 @@ pub fn train<B: AutodiffBackend>(
     }
 
     progress.finish_with_message("done");
-    save_final_checkpoint(&model, &config.output_dir, precision)?;
+    save_final_checkpoint(&model, &config.model, &config.output_dir, precision)?;
 
     Ok(())
 }
@@ -304,6 +311,10 @@ fn generate_text<B: Backend>(
         return Ok(Vec::new());
     }
 
+    let params = SamplingParams::new()
+        .with_temperature(temperature)
+        .with_min_p(min_p);
+
     let mut tokens = prompt.to_vec();
     let max_context = model.max_position_embeddings();
 
@@ -322,58 +333,11 @@ fn generate_text<B: Backend>(
             .slice([0..1, last_index..last_index + 1, 0..vocab_size])
             .squeeze_dims(&[0, 1]);
 
-        let next_token = sample_next_token(last_logits, temperature, min_p)?;
+        let next_token = sample_next_token(last_logits, &params, &tokens)?;
         tokens.push(next_token);
     }
 
     Ok(tokens)
-}
-
-fn sample_next_token<B: Backend>(
-    logits: Tensor<B, 1>,
-    temperature: f32,
-    min_p: f32,
-) -> Result<i64> {
-    let temp = if temperature <= 0.0 {
-        1e-5
-    } else {
-        temperature
-    };
-    let scaled = logits / temp;
-    let probs = softmax_fp32_if_needed(scaled, 0);
-    let data = probs.to_data();
-    let values: Vec<f32> = data.iter::<f32>().collect();
-    let mut ranked: Vec<(usize, f32)> = values.into_iter().enumerate().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let threshold = if min_p <= 0.0 || min_p >= 1.0 {
-        1.0
-    } else {
-        min_p
-    };
-    let mut filtered = Vec::new();
-    let mut cumulative = 0.0;
-    for (idx, prob) in ranked {
-        cumulative += prob;
-        filtered.push((idx, prob));
-        if cumulative >= threshold {
-            break;
-        }
-    }
-
-    let sum: f32 = filtered.iter().map(|(_, p)| *p).sum();
-    if sum == 0.0 {
-        return Ok(0);
-    }
-
-    let mut draw = random::<f32>() * sum;
-    for (idx, prob) in filtered {
-        draw -= prob;
-        if draw <= 0.0 {
-            return Ok(idx as i64);
-        }
-    }
-    Ok(0)
 }
 
 struct GenerationSettings {
@@ -399,6 +363,7 @@ fn tokens_to_tensor<B: Backend>(tokens: &[i64], device: &B::Device) -> Tensor<B,
 
 fn save_checkpoint<B: AutodiffBackend>(
     model: &LlamaModel<B>,
+    model_config: &ModelConfig,
     step: usize,
     val_loss: f32,
     output_dir: &str,
@@ -415,19 +380,22 @@ fn save_checkpoint<B: AutodiffBackend>(
             "Checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
         );
     }
-    if matches!(precision, PrecisionMode::MixedBf16) {
-        log::debug!(
-            "Final checkpoint stored in fp32 while bf16 was requested (mixed precision fallback)"
-        );
-    }
     CompactRecorder::new()
         .record(model.valid().into_record(), checkpoint_name.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;
+
+    // Save model config alongside checkpoint
+    let config_path = checkpoint_name.replace(".bin", ".config.json");
+    let config_json = serde_json::to_string_pretty(model_config)?;
+    fs::write(&config_path, config_json)?;
+    log::debug!("Model config saved to: {}", config_path);
+
     Ok(())
 }
 
 fn save_final_checkpoint<B: AutodiffBackend>(
     model: &LlamaModel<B>,
+    model_config: &ModelConfig,
     output_dir: &str,
     precision: PrecisionMode,
 ) -> Result<()> {
@@ -442,6 +410,13 @@ fn save_final_checkpoint<B: AutodiffBackend>(
     CompactRecorder::new()
         .record(record, path.clone().into())
         .map_err(|err| anyhow!(err.to_string()))?;
+
+    // Save model config alongside checkpoint
+    let config_path = format!("{}/final.config.json", output_dir);
+    let config_json = serde_json::to_string_pretty(model_config)?;
+    fs::write(&config_path, &config_json)?;
+    log::info!("Model config saved to: {}", config_path);
+
     log::info!("Training complete! Final checkpoint saved to {}", path);
     Ok(())
 }
