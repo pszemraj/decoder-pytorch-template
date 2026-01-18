@@ -1,19 +1,19 @@
 # Decoder Burn Template
 
-Rust re-implementation of the PyTorch decoder playground from the `main` branch: Llama baseline included, easy to hack and compare new ideas, but running on Burn 0.19 backends (WGPU, CUDA, or CPU).
+Rust re-implementation of the PyTorch decoder playground from the `main` branch: Llama baseline included, easy to hack and compare new ideas, running on Burn 0.20 backends (WGPU, CUDA, or CPU).
 
 ## Highlights
 
 - **One binary, YAML configs** - point at `configs/*.yaml` and train.
 - **Backend-agnostic** - select WGPU, CUDA, or CPU at runtime (with matching Cargo feature).
-- **Precision toggle** - run in fp32 or bf16 (autodetected from config, overridable via CLI).
+- **Precision toggle** - run in fp32 or bf16 on CUDA (bf16 uses f32 accumulation for stability).
 - **Llama-style decoder** - RMSNorm, SwiGLU, RoPE, causal mask, optional tied embeddings.
 - **Training parity with PyTorch** - gradient accumulation matches the Python version token-for-token.
+- **Standalone inference** - load checkpoints and generate text without retraining.
 - **Auto dataset streaming** - includes `data/enwik8.gz`; no preprocessing required.
 
-> ⚠️ Mixed precision (CUDA): FP32 is the supported path. BF16/TF32 attention kernels in this build do **not** reach FP32 convergence. `--precision bf16` will run attention/FFN in FP32 by default and emit a warning. Experimental overrides: `ATTN_MODE=flex32` (TF32 compute, FP32 accum) or `ATTN_MODE=bf16` (known to diverge). Expect degraded loss/generations with overrides until Burn exposes BF16-with-FP32-accum GEMMs.
-
-> ℹ️ Flex32 note: Burn’s `Flex32` is *not* NVIDIA TF32. It stores values with F16 mantissa/range and computes in F32; attention still loses accuracy. Stick to FP32 for convergence.
+> [!NOTE]
+> BF16 training works correctly on CUDA with Burn 0.20. CubeCL uses f32 accumulation for matmuls, and precision-sensitive operations (RMSNorm, softmax, log_softmax) upcast to f32 automatically. See `RESULTS.md` for benchmarks.
 
 ## Quick Start
 
@@ -23,26 +23,38 @@ git clone https://github.com/pszemraj/decoder-pytorch-template.git
 cd decoder-pytorch-template
 
 # Smoke test (WGPU backend, fp32)
-cargo run --release -- configs/test.yaml
+cargo run --release -- train configs/test.yaml
 
 # Nano config on CUDA in bf16 (requires --features backend-cuda)
 cargo run --release --features backend-cuda -- \
-    --backend cuda --precision bf16 configs/nano.yaml
+    train configs/nano.yaml --backend cuda --precision bf16
 
 # CPU baseline (requires --features backend-cpu)
 cargo run --release --features backend-cpu -- \
-    --backend cpu --precision fp32 configs/test.yaml
+    train configs/test.yaml --backend cpu --precision fp32
 
-# Custom config
-cargo run --release -- path/to/my_config.yaml
+# Inference from checkpoint
+cargo run --release -- infer -c runs/nano/final.mpk -p "Once upon a time" --max-length 100
 ```
 
-Both sample configs stream `data/enwik8.gz`, randomly slicing fixed-length sequences. Use `train_steps_per_epoch` / `val_steps` to cap iterations for quick experiments.
+Both sample configs stream `data/enwik8.gz`, randomly slicing fixed-length sequences. Use `num_batches` to cap iterations for quick experiments.
 
-### CLI Flags
+### CLI Subcommands
+
+**train** - Train a model from a YAML config:
+```bash
+cargo run --release -- train <config.yaml> [--backend wgpu|cuda|cpu] [--precision fp32|bf16]
+```
+
+**infer** - Generate text from a checkpoint:
+```bash
+cargo run --release -- infer -c <checkpoint.mpk> -p "prompt" [--max-length 100] [--temperature 0.9]
+```
+
+### Backend/Precision Flags
 
 - `--backend {wgpu|cuda|cpu}`: pick the backend. `wgpu` is default. Remember to enable the matching Cargo feature (`backend-cuda`, `backend-cpu`).
-- `--precision {fp32|bf16}`: overrides numeric precision. If omitted, the YAML's `mixed_precision` flag selects `bf16` when true, `fp32` otherwise. CPU always falls back to `fp32`.
+- `--precision {fp32|bf16}`: overrides numeric precision. WGPU only supports fp32. CPU always uses fp32.
 
 ## Configuration Files
 
@@ -82,15 +94,18 @@ output_dir: runs/my-exp
 decoder-burn-template/
 ├── src/
 │   ├── models/
-│   │   ├── llama.rs   # Reference decoder (RoPE, SwiGLU, RMSNorm)
-│   │   └── mod.rs     # Re-export point for your custom models
-│   ├── train.rs       # Training loop, dataset loaders, sampling
-│   ├── data.rs        # Char dataset + gzip loader
-│   ├── config.rs      # Burn Config structs
-│   └── main.rs        # CLI entry (backend/precision switches)
-├── configs/           # YAML experiments (test, nano, …)
-├── data/enwik8.gz     # Sample dataset (character-level)
-└── runs/              # Logs + checkpoints (final.bin per run)
+│   │   ├── llama.rs       # Reference decoder (RoPE, SwiGLU, RMSNorm)
+│   │   └── mod.rs         # Re-export point for your custom models
+│   ├── train.rs           # Training loop, dataset loaders, checkpoints
+│   ├── infer.rs           # Checkpoint loading and text generation
+│   ├── sampling.rs        # Sampling strategies (temp, top-k, top-p, min-p, rep penalty)
+│   ├── data.rs            # Char dataset + gzip loader
+│   ├── config.rs          # Burn Config structs
+│   ├── tensor_utils.rs    # Precision helpers (softmax fp32 upcast)
+│   └── main.rs            # CLI entry (train/infer subcommands)
+├── configs/               # YAML experiments (test, nano, benchmark_1k)
+├── data/enwik8.gz         # Sample dataset (character-level)
+└── runs/                  # Logs + checkpoints (final.mpk per run)
 ```
 
 ### Adding Your Model
@@ -137,13 +152,14 @@ MIT, same as the original project. Heavily inspired by the PyTorch template in `
 
 ### Compilation Errors
 
-Ensure you have Burn 0.19:
+Ensure you have Burn 0.20:
 
 ```toml
-burn = { version = "0.19", features = ["std", "train", "wgpu"] }
+burn = { version = "0.20", features = ["std", "train", "wgpu"] }
 ```
 
-- If you bump into an `evaluate_obligation` incremental ICE from `rustc` (seen as "encountered incremental compilation error ... canonical"), it's a compiler bug. Incremental builds are now disabled for dev/test profiles in `Cargo.toml`; if you manually re-enable them, run `cargo clean -p burn-llama` to unstick the build or set `CARGO_INCREMENTAL=0`.
+> [!TIP]
+> If you encounter an incremental compilation ICE from `rustc`, incremental builds are disabled in `Cargo.toml`. Run `cargo clean -p burn-llama` or set `CARGO_INCREMENTAL=0` to unstick the build.
 
 ## Roadmap
 
@@ -184,7 +200,7 @@ MIT
 
 ```bibtex
 @software{szemraj2025decoderburn,
-  title = {Burn Llama: Modern Implementation with Burn 0.19},
+  title = {Burn Llama: Modern Implementation with Burn 0.20},
   author = {Peter Szemraj},
   year = {2025},
   url = {https://github.com/pszemraj/decoder-burn-template}
