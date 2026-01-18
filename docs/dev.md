@@ -1,13 +1,45 @@
-# Mixed Precision Status (CUDA)
+# Mixed Precision Status (Burn 0.20 + CubeCL 0.9)
 
-Summary of why `--precision bf16` is unsafe today and how Flex32 differs from NVIDIA TF32.
+BF16 training works correctly on CUDA. Here's how precision is handled:
 
-- FP32 training converges as expected. Use this by default.
-- `Flex32` in Burn is **not** NVIDIA TF32. It stores values with F16 mantissa/range and computes in F32 (see `burn-tensor` `flex32` element), so attention still loses accuracy.
-- BF16 matmuls currently accumulate in BF16. There is no BF16-input + FP32-accum kernel exposed in CubeCL matmul yet, so attention diverges.
-- Because of the above, the runner forces FP32 attention/FFN even when `--precision bf16` is set. Overrides:
-  - `ATTN_MODE=flex32` to force Flex32/TF32 compute in attention (still lower accuracy than FP32).
-  - `ATTN_MODE=bf16` to force raw BF16 GEMMs (known to diverge; for experiments only).
-- A proper solution would add FP32 accumulation control to CubeCL matmuls (analogous to how reductions pick FP32 accum for BF16/F16). Until then, treat CUDA “bf16” as experimental only.
+## Matmul Accumulation
 
-If/when CubeCL gains BF16-input + FP32-accum matmuls, this project can switch back to real mixed precision for speed without breaking convergence.
+CubeCL 0.9 uses f32 accumulation for bf16 matmuls on non-macOS systems:
+
+```rust
+// From cubecl-matmul/src/components/spec.rs
+impl MatmulPrecision for bf16 {
+    type Lhs = (bf16, bf16);
+    type Rhs = (bf16, bf16);
+    #[cfg(not(target_os = "macos"))]
+    type Acc = (bf16, f32);  // f32 accumulation
+}
+```
+
+## Precision-Sensitive Operations
+
+Operations that require higher precision are automatically upcasted:
+
+| Operation | Implementation | Location |
+|-----------|---------------|----------|
+| RMSNorm | Burn upcasts to f32 internally | `burn-nn/src/modules/norm/rms.rs` |
+| Softmax (attention) | `softmax_fp32_if_needed` helper | `src/tensor_utils.rs` |
+| log_softmax (loss) | Upcasted in `cross_entropy` | `src/train.rs` |
+
+## Backend Precision Support
+
+| Backend | fp32 | bf16 |
+|---------|------|------|
+| CUDA | Yes | Yes (with f32 accum) |
+| WGPU | Yes | No |
+| CPU | Yes | No |
+
+## Benchmark Results
+
+See `RESULTS.md` for detailed benchmarks. Summary on RTX 5090:
+
+- CUDA fp32: 87s, val loss 1.58
+- CUDA bf16: 108s, val loss 1.61 (equivalent quality)
+- WGPU fp32: 280s, val loss 1.59
+
+BF16 is slightly slower than fp32 for this small model due to fp32 upcasting overhead in loss computation. For larger models, GEMM speedup should dominate.
