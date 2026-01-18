@@ -103,7 +103,7 @@ decoder-burn-template/
 │   ├── config.rs          # Burn Config structs
 │   ├── tensor_utils.rs    # Precision helpers (softmax fp32 upcast)
 │   └── main.rs            # CLI entry (train/infer subcommands)
-├── configs/               # YAML experiments (test, nano, benchmark_1k)
+├── configs/               # YAML experiments (test, nano, benchmark_1k, small_bench)
 ├── data/enwik8.gz         # Sample dataset (character-level)
 └── runs/                  # Logs + checkpoints (final.mpk per run)
 ```

@@ -32,9 +32,9 @@ seed: 42
 
 | Backend | Precision | Time (s) | Throughput | Peak VRAM | Avg GPU % | Val Loss (init→final) | Status |
 |---------|-----------|----------|------------|-----------|-----------|----------------------|--------|
-| WGPU    | fp32      | 280      | 3.57 it/s  | 7,444 MB  | 81%       | 5.55 → 1.59          | ✅ Good |
-| CUDA    | fp32      | 87       | 11.5 it/s  | 9,997 MB  | 76%       | 5.56 → 1.58          | ✅ Good |
-| CUDA    | bf16      | 108      | 9.26 it/s  | 9,088 MB  | 79%       | 5.56 → 1.61          | ✅ Good |
+| WGPU    | fp32      | 250.10   | 4.00 it/s  | n/a       | n/a       | 5.5447 → 1.6549       | ✅ Good |
+| CUDA    | fp32      | 85.35    | 11.71 it/s | n/a       | n/a       | 5.5404 → 1.5443       | ✅ Good |
+| CUDA    | bf16      | 106.07   | 9.43 it/s  | n/a       | n/a       | 5.5547 → 1.5688       | ✅ Good |
 
 ---
 
@@ -42,82 +42,89 @@ seed: 42
 
 ### 1. WGPU fp32 (Baseline)
 
-**Training time:** 280 seconds (4:40)
-**Throughput:** ~3.57 iterations/second
-**Peak VRAM:** 7,444 MB
-**Average GPU utilization:** 81%
+**Training time:** 250.10 seconds (4:10)
+**Throughput:** ~4.00 iterations/second
+**Peak VRAM:** n/a (not measured)
+**Average GPU utilization:** n/a (not measured)
 
 **Validation loss progression:**
 | Step | Val Loss |
 |------|----------|
-| 0    | 5.5533   |
-| 200  | 2.3883   |
-| 400  | 1.8940   |
-| 600  | 1.6248   |
-| 800  | 1.6175   |
-| 1000 | 1.5948   |
+| 0    | 5.5447   |
+| 200  | 2.3589   |
+| 400  | 1.9336   |
+| 600  | 1.7167   |
+| 800  | 1.5961   |
+| 1000 | 1.6549   |
 
 **Sample generation (step 1000):**
 ```
-Prompt: ach those tribes from their new
-Generated: the mid= president of the lead of [[Langlent]] or all also suppo
+Prompt: revision>
+  </page>
+  <page>
+   
+Generated:  <title>Gethol</title>
+    <id>16502</id>
+    <revision>
+      <
 ```
 
 ---
 
 ### 2. CUDA fp32
 
-**Training time:** 87 seconds (1:27)
-**Throughput:** ~11.5 iterations/second
-**Peak VRAM:** 9,997 MB
-**Average GPU utilization:** 76%
+**Training time:** 85.35 seconds (1:25)
+**Throughput:** ~11.71 iterations/second
+**Peak VRAM:** n/a (not measured)
+**Average GPU utilization:** n/a (not measured)
 
-**Speedup vs WGPU:** 3.22× faster
+**Speedup vs WGPU:** 2.93× faster
 
 **Validation loss progression:**
 | Step | Val Loss |
 |------|----------|
-| 0    | 5.5585   |
-| 200  | 2.3958   |
-| 400  | 1.8928   |
-| 600  | 1.7265   |
-| 800  | 1.6625   |
-| 1000 | 1.5757   |
+| 0    | 5.5404   |
+| 200  | 2.3722   |
+| 400  | 1.8792   |
+| 600  | 1.7168   |
+| 800  | 1.5733   |
+| 1000 | 1.5443   |
 
 **Sample generation (step 1000):**
 ```
-Prompt: ext bench". HP is recogniz
-Generated: ed in a general contained for his successor.  The island, the pa
+Prompt: |2&lt;sup&gt;ND&lt;/sup&gt;||46
+
+Generated: |--
+|-----------------------------------------------------------
 ```
 
 ---
 
 ### 3. CUDA bf16 ✅
 
-**Training time:** 108 seconds (1:48)
-**Throughput:** ~9.26 iterations/second
-**Peak VRAM:** 9,088 MB
-**Average GPU utilization:** 79%
+**Training time:** 106.07 seconds (1:46)
+**Throughput:** ~9.43 iterations/second
+**Peak VRAM:** n/a (not measured)
+**Average GPU utilization:** n/a (not measured)
 
 **Comparison to CUDA fp32:**
-- 24% slower (108s vs 87s) - overhead from fp32 upcasting in loss computation
-- 9% less VRAM (9,088 MB vs 9,997 MB)
-- Equivalent convergence (val loss ~1.6)
+- 24% slower (106s vs 85s) - overhead from fp32 upcasting in loss computation
+- Equivalent convergence (val loss ~1.57)
 
 **Validation loss progression:**
 | Step | Val Loss |
 |------|----------|
-| 0    | 5.5563   |
-| 200  | 2.4242   |
-| 400  | 1.9520   |
-| 600  | 1.8062   |
-| 800  | 1.6102   |
-| 1000 | 1.6918   |
+| 0    | 5.5547   |
+| 200  | 2.4719   |
+| 400  | 1.9859   |
+| 600  | 1.7941   |
+| 800  | 1.6551   |
+| 1000 | 1.5688   |
 
 **Sample generation (step 1000):**
 ```
-Prompt: he power of the Russian Orthodox
-Generated:  for the followed the Democrate but a local science were itself
+Prompt: y has also recovered somewhat si
+Generated: nce several completing a star the construction of consideral ear
 ```
 
 ### BF16 Implementation Notes
@@ -151,23 +158,19 @@ The fp32 upcasting in the loss adds overhead, making bf16 slightly slower than f
 
 ### Training Time
 ```
-WGPU fp32:  ████████████████████████████████████████████████ 280s
-CUDA bf16:  ██████████████████▌                              108s (2.59× faster)
-CUDA fp32:  ██████████████▊                                   87s (3.22× faster)
+WGPU fp32:  ████████████████████████████████████████████████ 250s
+CUDA bf16:  ██████████████████▌                              106s (2.36× faster)
+CUDA fp32:  ██████████████▊                                   85s (2.93× faster)
 ```
 
 ### VRAM Usage
-```
-WGPU fp32:  ████████████████████████████                     7,444 MB
-CUDA bf16:  ██████████████████████████████████▌              9,088 MB (+22%)
-CUDA fp32:  █████████████████████████████████████▌           9,997 MB (+34%)
-```
+Not measured in this run.
 
 ### Model Quality (Final Val Loss)
 ```
-CUDA fp32:  ████                                             1.58 ✅
-WGPU fp32:  ████                                             1.59 ✅
-CUDA bf16:  ████▏                                            1.61 ✅
+CUDA fp32:  ████                                             1.54 ✅
+WGPU fp32:  ████                                             1.65 ✅
+CUDA bf16:  ████                                             1.57 ✅
 ```
 
 All configurations produce similar final loss, demonstrating equivalent training quality.
@@ -176,8 +179,8 @@ All configurations produce similar final loss, demonstrating equivalent training
 
 ## Recommendations
 
-1. **Production training (CUDA available):** Use **CUDA fp32** - 3.22× faster than WGPU
-2. **Memory-constrained (CUDA):** Use **CUDA bf16** - 9% VRAM savings with equivalent quality
+1. **Production training (CUDA available):** Use **CUDA fp32** - 2.93× faster than WGPU
+2. **Memory-constrained (CUDA):** Use **CUDA bf16** - similar quality, potential VRAM savings (measure on your setup)
 3. **Portable/development:** Use **WGPU fp32** - works without CUDA feature flag
 4. **Larger models:** BF16 should be faster due to GEMM speedup dominating the overhead
 

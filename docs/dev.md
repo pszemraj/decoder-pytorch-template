@@ -42,8 +42,8 @@ When `mixed_precision` is enabled, training selects BF16 GEMMs if the backend su
 
 See `RESULTS.md` for detailed benchmarks. Summary on RTX 5090:
 
-- CUDA fp32: 87s, val loss 1.58
-- CUDA bf16: 108s, val loss 1.61 (equivalent quality)
-- WGPU fp32: 280s, val loss 1.59
+- CUDA fp32: 85s, val loss 1.54
+- CUDA bf16: 106s, val loss 1.57 (equivalent quality)
+- WGPU fp32: 250s, val loss 1.65
 
 BF16 is slightly slower than fp32 for this small model due to fp32 upcasting overhead in loss computation. For larger models, GEMM speedup should dominate.
