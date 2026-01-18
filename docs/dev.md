@@ -26,6 +26,10 @@ Operations that require higher precision are automatically upcasted:
 | Softmax (attention) | `softmax_fp32_if_needed` helper | `src/tensor_utils.rs` |
 | log_softmax (loss) | Upcasted in `cross_entropy` | `src/train.rs` |
 
+## GEMM Policy Selection
+
+When `mixed_precision` is enabled, training selects BF16 GEMMs if the backend supports BF16. If not, it falls back to fp32 GEMMs and logs a warning.
+
 ## Backend Precision Support
 
 | Backend | fp32 | bf16 |

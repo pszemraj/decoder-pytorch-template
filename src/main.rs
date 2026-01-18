@@ -153,7 +153,7 @@ fn run_train(
     backend: Option<BackendCli>,
     precision: Option<PrecisionCli>,
 ) -> Result<()> {
-    let training_config = if config_path.ends_with(".yaml") || config_path.ends_with(".yml") {
+    let mut training_config = if config_path.ends_with(".yaml") || config_path.ends_with(".yml") {
         info!("Loading config from: {}", config_path);
         load_config(&config_path)?
     } else {
@@ -175,6 +175,13 @@ fn run_train(
     } else {
         PrecisionCli::Fp32
     });
+    if precision.is_some() {
+        training_config.mixed_precision = matches!(precision_choice, PrecisionCli::Bf16);
+        info!(
+            "Overriding mixed_precision to {} based on --precision",
+            training_config.mixed_precision
+        );
+    }
 
     run_train_backend(backend_choice, precision_choice, training_config)?;
 

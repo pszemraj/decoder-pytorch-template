@@ -5,7 +5,7 @@ use burn::{
     optim::{decay::WeightDecayConfig, AdamConfig, GradientsParams, Optimizer},
     prelude::*,
     record::{CompactRecorder, Recorder},
-    tensor::{backend::AutodiffBackend, ElementConversion, Int, Tensor},
+    tensor::{backend::AutodiffBackend, DType, ElementConversion, Int, Tensor},
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::{
@@ -26,8 +26,17 @@ pub fn train<B: AutodiffBackend>(config: TrainingConfig, device: B::Device) -> R
 
     use crate::models::llama::MpPolicy;
     // MpPolicy controls per-layer GEMM precision for experimentation.
-    // With native bf16 backend, the backend handles autocast; fp32 policy keeps weights in fp32.
-    let mp_policy = MpPolicy::fp32();
+    // When mixed_precision is enabled and BF16 is supported, prefer BF16 GEMMs.
+    let mp_policy = if config.mixed_precision && B::supports_dtype(&device, DType::BF16) {
+        MpPolicy::bf16()
+    } else {
+        if config.mixed_precision {
+            log::warn!(
+                "mixed_precision=true but BF16 GEMMs are unsupported; falling back to fp32"
+            );
+        }
+        MpPolicy::fp32()
+    };
     let mut model = LlamaModel::<B>::new(config.model.clone(), &device, mp_policy);
     log::info!(
         "Total parameters: {}",

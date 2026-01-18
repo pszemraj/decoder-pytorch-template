@@ -18,7 +18,7 @@ use std::sync::Once;
 
 use crate::{config::ModelConfig, tensor_utils::softmax_fp32_if_needed};
 
-static BF16_LOG_ONCE: Once = Once::new();
+static GEMM_LOG_ONCE: Once = Once::new();
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub enum GemmMode {
@@ -109,6 +109,15 @@ impl MpPolicy {
         }
     }
 
+    pub fn bf16() -> Self {
+        Self {
+            qkv: GemmMode::Bf16,
+            o: GemmMode::Bf16,
+            ffn_up: GemmMode::Bf16,
+            ffn_down: GemmMode::Bf16,
+        }
+    }
+
     /// Stable mixed default for CUDA today: attention in Flex32 (TF32 compute, F32 accum),
     /// FFN kept in fp32 unless explicitly relaxed.
     pub fn attn_flex32_ffn_fp32() -> Self {
@@ -152,14 +161,15 @@ fn linear_gemm_autocast<B: Backend>(
         GemmMode::Flex32 => {
             let x_c = x2.cast(DType::Flex32);
             let w_c = w.clone().cast(DType::Flex32);
-            BF16_LOG_ONCE.call_once(|| log::warn!("GEMM mode = Flex32 (TF32 compute, F32 accum)"));
+            GEMM_LOG_ONCE.call_once(|| log::warn!("GEMM mode = Flex32 (TF32 compute, F32 accum)"));
             x_c.matmul(w_c).cast(DType::F32)
         }
         GemmMode::Bf16 => {
             let x_b = x2.cast(DType::BF16);
             let w_b = w.clone().cast(DType::BF16);
-            BF16_LOG_ONCE.call_once(|| log::warn!("GEMM mode = BF16 (raw BF16 accum)"));
-            x_b.matmul(w_b).cast(DType::F32)
+            GEMM_LOG_ONCE
+                .call_once(|| log::warn!("GEMM mode = BF16 (BF16 compute, F32 accum)"));
+            x_b.matmul(w_b)
         }
     };
     y2.reshape([b, s, out_d])

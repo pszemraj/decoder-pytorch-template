@@ -119,7 +119,7 @@ decoder-burn-template/
 
 | Backend Flag   | Runtime Flag     | Precision options | Notes                                  |
 | -------------- | ---------------- | ----------------- | -------------------------------------- |
-| `backend-wgpu` | `--backend wgpu` | fp32 / bf16       | Default build, Vulkan/WebGPU/Metal     |
+| `backend-wgpu` | `--backend wgpu` | fp32              | Default build, Vulkan/WebGPU/Metal     |
 | `backend-cuda` | `--backend cuda` | fp32 / bf16       | Requires NVIDIA GPU + CUDA libs        |
 | `backend-cpu`  | `--backend cpu`  | fp32 (bf16fp32)   | Uses NdArray backend (slow but simple) |
 
