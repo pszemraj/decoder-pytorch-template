@@ -21,8 +21,15 @@ from .llama import RMSNorm, SwiGLU
 from .utils import gumbel_sample, min_p_filter
 
 
-def exists(v):
-    """Check if value exists (is not None)."""
+def exists(v: object) -> bool:
+    """Check if value exists (is not None).
+
+    Args:
+        v: Value to check.
+
+    Returns:
+        True if v is not None, False otherwise.
+    """
     return v is not None
 
 
@@ -90,7 +97,11 @@ class DiffAttentionV2(nn.Module):
         self.register_buffer("causal_mask", None, persistent=False)
 
     def _flash_attn_available(self) -> bool:
-        """Return True if flash attention kernels are available."""
+        """Check if flash attention kernels are available.
+
+        Returns:
+            True if flash attention is available, False otherwise.
+        """
         if torch.cuda.is_available():
             return True
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -340,7 +351,7 @@ class DiffLlamaV2(nn.Module):
         # Initialize weights properly
         self._init_weights()
 
-    def _init_weights(self):
+    def _init_weights(self) -> None:
         """Initialize model weights using standard transformer initialization."""
         # Initialize embeddings with smaller std
         nn.init.normal_(self.token_embed.weight, mean=0.0, std=0.02)
@@ -355,12 +366,20 @@ class DiffLlamaV2(nn.Module):
 
     @property
     def vocab_size(self) -> int:
-        """Return vocabulary size."""
+        """Return vocabulary size.
+
+        Returns:
+            Number of tokens in the vocabulary.
+        """
         return self.num_tokens
 
     @property
     def model_dim(self) -> int:
-        """Return model dimension."""
+        """Return model dimension.
+
+        Returns:
+            Hidden dimension of the model.
+        """
         return self.dim
 
     def forward(
