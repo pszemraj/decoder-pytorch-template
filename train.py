@@ -14,7 +14,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from decoder_pytorch import Llama, get_optimal_device, model_summary
+from decoder_pytorch import DiffLlamaV2, Llama, get_optimal_device, model_summary
 
 
 # Data utilities
@@ -114,7 +114,12 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
         )
         flash_attn_requested = False
 
-    model = Llama(
+    # Model selection via config
+    model_type = config.get("model_type", "llama")
+    ModelClass = DiffLlamaV2 if model_type == "diffllamav2" else Llama
+    print(f"Model type: {model_type} ({ModelClass.__name__})")
+
+    model = ModelClass(
         num_tokens=config.get("num_tokens", 256),
         dim=config.get("dim", 512),
         depth=config.get("depth", 16),
