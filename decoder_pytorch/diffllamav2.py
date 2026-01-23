@@ -120,7 +120,10 @@ class DiffAttentionV2(nn.Module):
         batch, seq_len, _ = x.shape
 
         # Compute per-token lambda values: (batch, seq_len, heads)
-        lam = torch.sigmoid(self.lam_proj(x))
+        # Use fp32 for small projection to avoid cuBLAS issues with bf16 and small matrices
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            lam = torch.sigmoid(self.lam_proj(x.float()))
+        lam = lam.to(x.dtype)
         # Expand for attention: (batch, heads, seq_len, 1) for broadcasting
         lam = rearrange(lam, "b n h -> b h n 1")
 
