@@ -1,3 +1,8 @@
+"""Utility functions for decoder-pytorch models.
+
+Includes sampling utilities, device detection, and model summary tools.
+"""
+
 import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
@@ -12,12 +17,27 @@ from torch import Tensor
 
 
 def log(t: Tensor, eps: float = 1e-20) -> Tensor:
-    """Safe log operation."""
+    """Safe log operation with clamping for numerical stability.
+
+    Args:
+        t: Input tensor.
+        eps: Minimum value to clamp to before taking log.
+
+    Returns:
+        Log of clamped input tensor.
+    """
     return torch.log(t.clamp(min=eps))
 
 
 def gumbel_noise(t: Tensor) -> Tensor:
-    """Generate Gumbel noise."""
+    """Generate Gumbel noise matching input tensor shape.
+
+    Args:
+        t: Input tensor to match shape.
+
+    Returns:
+        Gumbel-distributed noise tensor.
+    """
     noise = torch.zeros_like(t).uniform_(0, 1)
     return -log(-log(noise))
 
@@ -110,7 +130,11 @@ def top_p_filter(logits: Tensor, p: float = 0.9) -> Tensor:
 
 
 def _mps_available() -> bool:
-    """Return True if MPS is available."""
+    """Check if MPS (Apple Silicon) is available.
+
+    Returns:
+        True if MPS backend is available, False otherwise.
+    """
     return hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
 
 
@@ -123,9 +147,20 @@ def get_optimal_device(
     the ``force`` argument or the ``FORCE_DEVICE`` environment variable. The
     return value is intentionally simple—a tuple that works well with tuple
     unpacking in training scripts.
+
+    Args:
+        force: Force a specific device type (cuda, mps, or cpu).
+
+    Returns:
+        Tuple of (device, device_type, amp_dtype) for the best available accelerator.
     """
 
     def _normalize(device_str: str) -> str:
+        """Extract device type from device string (e.g., 'cuda:0' -> 'cuda').
+
+        Returns:
+            Device type string without index.
+        """
         return device_str.split(":", 1)[0]
 
     requested = (force or os.getenv("FORCE_DEVICE", "")).strip().lower()
@@ -218,9 +253,19 @@ def model_summary(
 
     # ---------- formatting helpers ----------
     def _format_number(num: int) -> str:
+        """Format number with commas or '--' if zero.
+
+        Returns:
+            Formatted string representation.
+        """
         return f"{num:,}" if num > 0 else "--"
 
     def _format_shape(shape: Optional[torch.Size]) -> str:
+        """Format tensor shape as 'AxBxC' string or 'N/A' if None.
+
+        Returns:
+            Formatted shape string.
+        """
         return "x".join(map(str, shape)) if shape else "N/A"
 
     # ---------- build param info once ----------
@@ -338,6 +383,15 @@ def model_summary(
     else:
 
         def _grad_state(total: int, trainable: int) -> str:
+            """Determine gradient state label from param counts.
+
+            Args:
+                total: Total parameter count.
+                trainable: Trainable parameter count.
+
+            Returns:
+                State label: 'frozen', 'trainable', or 'mixed'.
+            """
             if trainable == 0:
                 return "frozen"
             if trainable == total:

@@ -5,7 +5,7 @@ import gzip
 import json
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional, Tuple
 
 import numpy as np
 import torch
@@ -18,8 +18,15 @@ from decoder_pytorch import DiffLlamaV2, Llama, get_optimal_device, model_summar
 
 
 # Data utilities
-def cycle(loader):
-    """Cycle through a dataloader infinitely."""
+def cycle(loader: DataLoader) -> Iterator:
+    """Cycle through a dataloader infinitely.
+
+    Args:
+        loader: DataLoader to cycle through.
+
+    Yields:
+        Batches from the dataloader, repeating indefinitely.
+    """
     while True:
         for data in loader:
             yield data
@@ -47,8 +54,18 @@ class SequenceDataset(Dataset):
         return self.data[start : start + self.seq_len + 1].long()
 
 
-def load_data(data_path: str, train_split: float = 0.9):
-    """Load character-level data from gzip file."""
+def load_data(
+    data_path: str, train_split: float = 0.9
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Load character-level data from gzip file.
+
+    Args:
+        data_path: Path to gzipped data file.
+        train_split: Fraction of data for training.
+
+    Returns:
+        Tuple of (train_data, val_data) tensors.
+    """
     with gzip.open(data_path) as f:
         data = np.frombuffer(f.read(int(95e6)), dtype=np.uint8).copy()
 
@@ -59,9 +76,13 @@ def load_data(data_path: str, train_split: float = 0.9):
     return train_data, val_data
 
 
-def train(config_path: str, resume_checkpoint: Optional[str] = None):
-    """Main training function."""
+def train(config_path: str, resume_checkpoint: Optional[str] = None) -> None:
+    """Main training function.
 
+    Args:
+        config_path: Path to YAML config file.
+        resume_checkpoint: Optional path to checkpoint to resume from.
+    """
     # Load config
     with open(config_path) as f:
         config = yaml.safe_load(f)
@@ -78,7 +99,12 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
     # Setup autocast context
     use_autocast = bool(config.get("use_autocast", True))
 
-    def autocast_context():
+    def autocast_context() -> torch.autocast:
+        """Return appropriate autocast context manager.
+
+        Returns:
+            Autocast context or nullcontext if disabled.
+        """
         if use_autocast:
             return torch.autocast(device_type=device_type, dtype=amp_dtype)
         return nullcontext()
@@ -300,7 +326,11 @@ def train(config_path: str, resume_checkpoint: Optional[str] = None):
 
 
 def get_parser() -> argparse.ArgumentParser:
-    """Get argument parser."""
+    """Get argument parser for training script.
+
+    Returns:
+        Configured ArgumentParser instance.
+    """
     parser = argparse.ArgumentParser(
         description="Train language model",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -314,7 +344,7 @@ def get_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run():
+def run() -> None:
     """Entry point for training script."""
     args = get_parser().parse_args()
     train(args.config, args.resume)
