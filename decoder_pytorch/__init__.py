@@ -1,5 +1,6 @@
 """Llama-style transformer for language modeling experiments."""
 
+from .diffllamav2 import DiffLlamaV2
 from .llama import Llama
 from .utils import (
     get_optimal_device,
@@ -14,6 +15,7 @@ from .utils import (
 
 __all__ = [
     "Llama",
+    "DiffLlamaV2",
     # Sampling utilities
     "log",
     "gumbel_noise",
